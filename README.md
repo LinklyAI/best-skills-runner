@@ -2,12 +2,13 @@
 
 The data pipeline behind [**LinklyAI/best-skills**](https://github.com/LinklyAI/best-skills) — a daily, cross-ecosystem ranking of AI agent skills.
 
-[![daily](https://github.com/LinklyAI/best-skills-runner/actions/workflows/daily.yml/badge.svg)](https://github.com/LinklyAI/best-skills-runner/actions/workflows/daily.yml)
+[![daily](https://github.com/LinklyAI/best-skills/actions/workflows/daily.yml/badge.svg)](https://github.com/LinklyAI/best-skills/actions/workflows/daily.yml)
+[![probe](https://github.com/LinklyAI/best-skills-runner/actions/workflows/probe.yml/badge.svg)](https://github.com/LinklyAI/best-skills-runner/actions/workflows/probe.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Every skills registry only sees its own ecosystem: skills.sh counts Claude/Vercel CLI installs, ClawHub counts OpenClaw downloads, SkillHub counts installs from China — and none of them see social traction. This pipeline collects all of them once a day, merges them into a single entity graph, computes nine rankings, validates the output, and publishes it as open CSV.
 
-Runs on GitHub Actions every day at 01:17 UTC. Everything it produces lives in the public data repo — there is no database and no server.
+Runs on GitHub Actions every day at 01:17 UTC — the scheduled workflow lives in the [data repo](https://github.com/LinklyAI/best-skills/blob/main/.github/workflows/daily.yml), which checks this one out and runs it. Everything the pipeline produces lives in that repo; there is no database and no server.
 
 ## Pipeline
 
