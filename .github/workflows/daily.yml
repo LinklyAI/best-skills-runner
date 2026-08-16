@@ -46,6 +46,10 @@ jobs:
           fetch-depth: 0 # publish does `git pull --rebase`
 
       - uses: pnpm/action-setup@v4
+        with:
+          # This repo is checked out into runner/, so the packageManager field
+          # pnpm/action-setup reads is not at the workspace root.
+          package_json_file: runner/package.json
       - uses: actions/setup-node@v5
         with:
           node-version: 24
