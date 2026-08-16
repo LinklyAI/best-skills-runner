@@ -1,0 +1,45 @@
+# Connectivity smoke test against every data source.
+# Its real job is answering "can a datacenter IP still reach these sites?" —
+# skills.sh and ClawHub are scraped as HTML and can be gated by anti-bot rules,
+# and SkillHub is a China-hosted API.
+name: probe
+
+on:
+  schedule:
+    - cron: "23 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Probe all sources
+        env:
+          # Probing only reads public data, so the built-in token is enough
+          # when no dedicated PAT is configured.
+          GITHUB_TOKEN: ${{ secrets.BEST_SKILLS_PAT || github.token }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        run: |
+          set -o pipefail
+          pnpm probe 2>&1 | tee "$RUNNER_TEMP/probe.log"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### probe — ${{ job.status }}'
+            echo '```'
+            cat "$RUNNER_TEMP/probe.log" 2>/dev/null || echo '(no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
