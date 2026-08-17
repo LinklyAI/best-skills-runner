@@ -30,6 +30,10 @@ jobs:
           # when no dedicated PAT is configured.
           GITHUB_TOKEN: ${{ secrets.BEST_SKILLS_PAT || github.token }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          # Without these the Bluesky probe reports the shared-IP throttle rather
+          # than what the pipeline actually experiences.
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
         run: |
           set -o pipefail
           pnpm probe 2>&1 | tee "$RUNNER_TEMP/probe.log"

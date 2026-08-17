@@ -3,6 +3,7 @@ import { clawhub } from "./sources/clawhub.js";
 import { skillhub } from "./sources/skillhub.js";
 import { githubSource } from "./sources/github.js";
 import { fetchJson } from "./lib/http.js";
+import { bskyLogin } from "./lib/bsky-auth.js";
 import { env } from "./lib/env.js";
 import { log } from "./lib/log.js";
 
@@ -34,11 +35,14 @@ const targets: ProbeTarget[] = [
   {
     id: "bluesky",
     async probe(): Promise<string> {
+      // Authenticate when credentials exist, because that is what the collector does.
+      // An anonymous probe reports the shared-IP throttle, which the real run never sees.
+      const token = await bskyLogin();
       const d = await fetchJson<{ hitsTotal?: number }>(
         "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=%22claude%20skills%22&limit=1",
-        PROBE_OPTS,
+        { ...PROBE_OPTS, ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}) },
       );
-      return `hitsTotal=${d.hitsTotal}`;
+      return `hitsTotal=${d.hitsTotal}${token ? "" : " (anonymous)"}`;
     },
   },
   {

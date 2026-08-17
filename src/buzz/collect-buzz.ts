@@ -1,5 +1,6 @@
 import { fetchJson, sleep } from "../lib/http.js";
 import { env } from "../lib/env.js";
+import { bskyLogin } from "../lib/bsky-auth.js";
 import { githubToken } from "../lib/github-auth.js";
 import { log } from "../lib/log.js";
 import type { RawTable } from "../sources/types.js";
@@ -55,18 +56,26 @@ interface BskyPost {
   record?: { text?: string; createdAt?: string };
 }
 
-async function bskySearch(phrase: string, sinceIso: string): Promise<{ hitsTotal: number; posts: BskyPost[] }> {
+async function bskySearch(
+  phrase: string,
+  sinceIso: string,
+  token: string | null,
+): Promise<{ hitsTotal: number; posts: BskyPost[] }> {
   const url =
     `https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=${encodeURIComponent(phrase)}` +
     `&limit=25&since=${encodeURIComponent(sinceIso)}`;
-  // No retries on purpose. Unauthenticated search is throttled per source IP: trip it
-  // and it answers 403 ("forbidden by administrative rules") for roughly a minute
-  // — measured 2026-08-17: 7 requests through, 13 straight refusals, recovery between
-  // +35s and +65s. That outlasts any backoff worth putting in front of 100 targets,
-  // so fail fast and let the circuit breaker skip the platform. Note the quota covers
-  // everything leaving the same IP, so on a hosted runner other tenants can exhaust
-  // it before we send our first request — which is what happened in CI that morning.
-  const d = await fetchJson<{ hitsTotal?: number; posts?: BskyPost[] }>(url, { timeoutMs: 30_000, retries: 0 });
+  // Anonymous search is throttled per source IP: trip it and it answers 403
+  // ("forbidden by administrative rules") for roughly a minute — measured
+  // 2026-08-17: 7 requests through, 13 straight refusals, recovery between +35s
+  // and +65s. That outlasts any backoff worth putting in front of 100 targets, so
+  // anonymous runs fail fast and let the circuit breaker skip the platform.
+  // Authenticated runs are metered per account instead and do not hit that wall,
+  // so they keep the normal retry budget for ordinary hiccups.
+  const d = await fetchJson<{ hitsTotal?: number; posts?: BskyPost[] }>(url, {
+    timeoutMs: 30_000,
+    retries: token ? 2 : 0,
+    ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+  });
   return { hitsTotal: d.hitsTotal ?? 0, posts: d.posts ?? [] };
 }
 
@@ -107,6 +116,7 @@ async function xSearchPage(query: string, key: string, cursor?: string): Promise
 export async function collectBuzz(targets: BuzzTarget[]): Promise<RawTable[]> {
   const ghToken = githubToken();
   const rapidKey = env("RAPIDAPI_KEY");
+  const bskyToken = await bskyLogin(); // null → anonymous, still works from a clean IP
   // Fix the window ONCE per run — per-request evaluation drifted the window during
   // the ~20 minute collection (audit B17).
   const windowStart = new Date(Date.now() - WINDOW_DAYS * 86_400_000);
@@ -167,7 +177,7 @@ export async function collectBuzz(targets: BuzzTarget[]): Promise<RawTable[]> {
 
   // Bluesky — same pattern
   await runPlatform("bsky", 1200, async (t) => {
-    const { hitsTotal, posts } = await bskySearch(t.phrase, sinceIso);
+    const { hitsTotal, posts } = await bskySearch(t.phrase, sinceIso, bskyToken);
     const row = rows.get(t.key)!;
     row.bsky_raw_7d = hitsTotal;
     if (hitsTotal === 0) {
