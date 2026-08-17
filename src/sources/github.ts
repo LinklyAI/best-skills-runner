@@ -1,11 +1,21 @@
-import { fetchJson, sleep } from "../lib/http.js";
+import { describeHttpError, fetchJson, sleep } from "../lib/http.js";
 // Note: GraphQL calls below use fetch directly (POST); fetchJson is GET-only.
 import { githubToken } from "../lib/github-auth.js";
 import { log } from "../lib/log.js";
 import type { RawTable } from "./types.js";
 
 const SEED_URL = "https://raw.githubusercontent.com/Chat2AnyLLM/awesome-repo-configs/main/skill_repos.json";
-const BATCH = 100;
+
+// 2026-08-17: a run died on HTTP 403 at batch 12 of 39 after a year of 100-repo
+// batches working fine. It was not the primary limit — a batch this shape costs
+// 1 point of the hourly 1000, measured — but a secondary one, which GitHub
+// applies to server CPU time rather than to request count. 50 aliases halves the
+// node count per query (1000 → 500) and the longer pause spreads the load.
+const BATCH = 50;
+const BATCH_PAUSE_MS = 1_200;
+// GitHub asks for at least a minute before retrying a secondary rate limit.
+const GQL_RETRIES = 2;
+const GQL_BACKOFF_MS = 60_000;
 
 /** Accepts "owner/repo", full GitHub URLs, or objects with a repo-ish field. */
 function normalizeRepoRef(entry: unknown): string | null {
@@ -54,6 +64,32 @@ interface GqlRepo {
   repositoryTopics: { nodes: Array<{ topic: { name: string } }> };
 }
 
+/**
+ * One GraphQL POST, retried through throttling.
+ *
+ * Throttling arrives as a 403 with no usable body unless you read it, so the
+ * failure message carries the diagnosis (which limit, what GitHub said, how long
+ * it wants us to wait). Without the retry a single throttled batch discards the
+ * whole snapshot and the day ships nothing.
+ */
+async function gqlPost(query: string, token: string): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (resp.ok) return resp;
+    const diag = await describeHttpError(resp);
+    const retryable = resp.status === 403 || resp.status === 429 || resp.status >= 500;
+    if (!retryable || attempt >= GQL_RETRIES) throw new Error(`GitHub GraphQL ${diag}`);
+    const wait = Number(resp.headers.get("retry-after")) * 1000 || GQL_BACKOFF_MS * 2 ** attempt;
+    log.warn("github", `${diag} — retrying in ${Math.round(wait / 1000)}s (${attempt + 1}/${GQL_RETRIES})`);
+    await sleep(wait);
+  }
+}
+
 async function fetchStats(repos: string[], token: string): Promise<RepoStat[]> {
   const out: RepoStat[] = [];
   const seen = new Set<string>();
@@ -65,13 +101,7 @@ async function fetchStats(repos: string[], token: string): Promise<RepoStat[]> {
         return `r${j}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { nameWithOwner stargazerCount pushedAt isArchived description repositoryTopics(first: 10) { nodes { topic { name } } } }`;
       })
       .join("\n");
-    const resp = await fetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: `query {\n${fields}\n}` }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!resp.ok) throw new Error(`GitHub GraphQL HTTP ${resp.status}`);
+    const resp = await gqlPost(`query {\n${fields}\n}`, token);
     const json = (await resp.json()) as { data?: Record<string, GqlRepo | null> | null; errors?: Array<{ type?: string }> };
     // GraphQL errors often come back as HTTP 200 with data: null — do not swallow a whole batch (audit B21)
     if (!json.data) {
@@ -96,8 +126,11 @@ async function fetchStats(repos: string[], token: string): Promise<RepoStat[]> {
       got++;
     }
     if (got === 0 && batch.length > 10) log.warn("github", `batch at ${i}: 0/${batch.length} repos resolved`);
-    log.info("github", `stats ${Math.min(i + BATCH, repos.length)}/${repos.length}`);
-    await sleep(500);
+    // Halving the batch size doubled the number of batches; keep the log readable
+    // by reporting every 500 repos rather than every batch.
+    const done = Math.min(i + BATCH, repos.length);
+    if (done % 500 < BATCH || done === repos.length) log.info("github", `stats ${done}/${repos.length}`);
+    await sleep(BATCH_PAUSE_MS);
   }
   return out;
 }
