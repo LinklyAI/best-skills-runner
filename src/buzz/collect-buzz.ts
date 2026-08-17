@@ -59,7 +59,14 @@ async function bskySearch(phrase: string, sinceIso: string): Promise<{ hitsTotal
   const url =
     `https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=${encodeURIComponent(phrase)}` +
     `&limit=25&since=${encodeURIComponent(sinceIso)}`;
-  const d = await fetchJson<{ hitsTotal?: number; posts?: BskyPost[] }>(url, { timeoutMs: 30_000 });
+  // No retries on purpose. Unauthenticated search is throttled per source IP: trip it
+  // and it answers 403 ("forbidden by administrative rules") for roughly a minute
+  // — measured 2026-08-17: 7 requests through, 13 straight refusals, recovery between
+  // +35s and +65s. That outlasts any backoff worth putting in front of 100 targets,
+  // so fail fast and let the circuit breaker skip the platform. Note the quota covers
+  // everything leaving the same IP, so on a hosted runner other tenants can exhaust
+  // it before we send our first request — which is what happened in CI that morning.
+  const d = await fetchJson<{ hitsTotal?: number; posts?: BskyPost[] }>(url, { timeoutMs: 30_000, retries: 0 });
   return { hitsTotal: d.hitsTotal ?? 0, posts: d.posts ?? [] };
 }
 

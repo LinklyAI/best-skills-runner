@@ -11,6 +11,33 @@ export interface FetchOptions {
   retryDelayMs?: number;
 }
 
+/**
+ * Turns a rejected response into a diagnosable message.
+ *
+ * A bare status code cannot tell a primary rate limit from a secondary one from
+ * an outright block — GitHub and Bluesky both answer all three with 403. The
+ * headers and the body can. Consumes the body, so only call this on a response
+ * you are about to give up on or retry.
+ */
+export async function describeHttpError(res: Response): Promise<string> {
+  const parts = [`HTTP ${res.status}`];
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  if (remaining !== null) {
+    const resource = res.headers.get("x-ratelimit-resource") ?? "?";
+    parts.push(`ratelimit ${remaining}/${res.headers.get("x-ratelimit-limit") ?? "?"} on ${resource}`);
+  }
+  const retryAfter = res.headers.get("retry-after");
+  if (retryAfter) parts.push(`retry-after ${retryAfter}s`);
+  const body = await res.text().catch(() => "");
+  if (body) parts.push(`body: ${body.slice(0, 300).replace(/\s+/g, " ")}`);
+  return parts.join(" | ");
+}
+
+/** 403 is in here because both APIs we poll use it for throttling, not just for "denied". */
+function isRetryable(status: number): boolean {
+  return status === 403 || status === 429 || status >= 500;
+}
+
 async function fetchWithRetry(url: string, opts: FetchOptions = {}): Promise<Response> {
   const { headers = {}, timeoutMs = 60_000, retries = 2, retryDelayMs = 2_000 } = opts;
   let lastErr: unknown;
@@ -20,10 +47,12 @@ async function fetchWithRetry(url: string, opts: FetchOptions = {}): Promise<Res
         headers: { "User-Agent": UA, ...headers },
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (res.status === 429 || res.status >= 500) {
-        lastErr = new Error(`HTTP ${res.status} for ${url}`);
+      if (isRetryable(res.status)) {
+        const diag = await describeHttpError(res);
+        lastErr = new Error(`${diag} for ${url}`);
+        if (attempt >= retries) break;
         const retryAfter = Number(res.headers.get("retry-after")) * 1000 || retryDelayMs * 2 ** attempt;
-        log.warn("http", `${res.status} on ${url}, retrying in ${retryAfter}ms`);
+        log.warn("http", `${diag} on ${url}, retrying in ${retryAfter}ms`);
         await sleep(retryAfter);
         continue;
       }
@@ -42,13 +71,13 @@ async function fetchWithRetry(url: string, opts: FetchOptions = {}): Promise<Res
 
 export async function fetchText(url: string, opts?: FetchOptions): Promise<string> {
   const res = await fetchWithRetry(url, opts);
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  if (!res.ok) throw new Error(`${await describeHttpError(res)} for ${url}`);
   return res.text();
 }
 
 export async function fetchJson<T = unknown>(url: string, opts?: FetchOptions): Promise<T> {
   const res = await fetchWithRetry(url, opts);
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  if (!res.ok) throw new Error(`${await describeHttpError(res)} for ${url}`);
   return (await res.json()) as T;
 }
 
