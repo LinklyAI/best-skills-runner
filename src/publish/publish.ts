@@ -54,8 +54,10 @@ export function commitAndPush(date: string): void {
   const repo = dataRepoPath();
   const run = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
   // Commit local changes FIRST — `pull --rebase` refuses to run over unstaged changes.
-  run("git add data README.md");
-  const status = run("git status --porcelain data README.md");
+  // The pathspec covers the English README and every translation: they all carry the
+  // rankings block, so a run that only moved a translation still has something to commit.
+  run("git add data 'README*.md'");
+  const status = run("git status --porcelain data 'README*.md'");
   if (!status.trim()) {
     log.info("publish", "no data changes to commit");
     return;

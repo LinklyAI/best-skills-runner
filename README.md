@@ -20,7 +20,7 @@ rank/        entity resolution (fully-qualified keys, cross-platform links only 
              nine rankings + a five-dimension weighted index
    ↓
 publish/     write CSVs to ../best-skills/data/YYYY-MM-DD/{raw,rankings}/
-             render the ranking previews into the data repo's README
+             render the ranking previews into the data repo's READMEs, one per language
    ↓
 validate.ts  publication gate — row-count floors, sort monotonicity, rank continuity,
              directory closure, day-over-day drift, sanity anchors
@@ -79,7 +79,7 @@ src/
 ├── sources/       collectors: skills-sh · clawhub · skillhub · github
 ├── buzz/          mention volume across HN · Bluesky · GitHub search · X
 ├── rank/          entity resolution · percentile scoring · the nine rankings
-├── publish/       CSV output, README rendering, git commit + push
+├── publish/       CSV output, README rendering (per language), git commit + push
 ├── validate.ts    publication gate
 └── lib/           csv · env · http · github-auth · log
 ```
