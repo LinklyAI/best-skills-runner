@@ -164,18 +164,33 @@ function wis(s: Scored): number | undefined {
   return Math.round(base * penalty * 1000) / 10;
 }
 
+/**
+ * Public page for a skill, empty when the registry gives us no way to address it.
+ *
+ * Computed here rather than at render time because it needs the resolved entity: a
+ * ClawHub URL takes an owner handle that only surfaces through the official feed or a
+ * SkillHub upstream link. SkillHub's own skills have no addressable page — the site is
+ * a client-rendered app whose sitemap lists only category pages.
+ */
+function pageUrl(s: Scored): string | undefined {
+  if (s.platform === "skills.sh" && s.ssSource) return `https://www.skills.sh/${s.ssSource}/${s.name}`;
+  if (s.chSlug && s.chOwner) return `https://clawhub.ai/${s.chOwner}/skills/${s.chSlug}`;
+  return undefined;
+}
+
 const IDENT = (s: Scored): Row => ({
   skill: s.name,
   platform: s.platform,
   vendor: s.vendor,
   source_skillssh: s.ssSource,
   slug_clawhub: s.chSlug,
+  url: pageUrl(s),
   match: s.match,
   description: s.description,
   description_zh: s.descriptionZh,
 });
 
-const IDENT_COLS = ["skill", "platform", "vendor", "source_skillssh", "slug_clawhub", "match", "description", "description_zh"];
+const IDENT_COLS = ["skill", "platform", "vendor", "source_skillssh", "slug_clawhub", "url", "match", "description", "description_zh"];
 
 /** Maintain the cumulative first-seen index (data/index/first-seen.csv). */
 function updateFirstSeen(dataDir: string, date: string, entities: Entity[]): { firstSeen: Map<string, string>; earliest: string } {

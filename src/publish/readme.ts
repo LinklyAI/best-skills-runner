@@ -7,6 +7,43 @@ import type { RawTable } from "../sources/types.js";
 const START = "<!-- RANKINGS:START -->";
 const END = "<!-- RANKINGS:END -->";
 
+/** Registry home pages — also the base for the vendor and platform links. */
+const PLATFORM_HOME: Record<string, string> = {
+  "skills.sh": "https://www.skills.sh",
+  clawhub: "https://clawhub.ai",
+  "skillhub-cn": "https://skillhub.cn",
+};
+
+/**
+ * Public page for whatever a cell names, or null when nothing addressable exists.
+ *
+ * Skill URLs are resolved during ranking and arrive on the row (they need registry
+ * identifiers the preview does not show); the rest compose from what the row carries.
+ */
+function linkFor(col: string, r: RawTable["rows"][number]): string | null {
+  const str = (k: string): string => {
+    const v = r[k];
+    return typeof v === "string" ? v.trim() : "";
+  };
+  const platform = str("platform");
+  if (col === "skill") return str("url") || null;
+  if (col === "repo") return str("repo") ? `https://github.com/${str("repo")}` : null;
+  if (col === "platform") return PLATFORM_HOME[platform] ?? null;
+  if (col === "vendor") {
+    // SkillHub vendors are registered company names, not handles that address a page.
+    const home = platform === "skillhub-cn" ? undefined : PLATFORM_HOME[platform];
+    return home && str("vendor") ? `${home}/${str("vendor")}` : null;
+  }
+  return null;
+}
+
+/** Wrap a cell in a Markdown link, escaping what would break the label or the target. */
+function link(text: string, url: string): string {
+  const label = text.replace(/([[\]])/g, "\\$1");
+  const target = encodeURI(url).replace(/\(/g, "%28").replace(/\)/g, "%29");
+  return `[${label}](${target})`;
+}
+
 function fmt(v: unknown): string {
   if (v === undefined || v === null || v === "") return "—";
   // Thousands separators stay en-US in every language: the same number must read the
@@ -25,7 +62,10 @@ function renderTable(table: RawTable, date: string, locale: Locale): string {
     const v = fmt(r[k]);
     // X counts stop at the page cap — a capped 100 is "at least 100", not 100 (audit M9)
     const truncated = r["x_truncated"] === true || r["x_truncated"] === "true";
-    return k === "x_mentions_7d" && truncated && v !== "—" ? `${v}+` : v;
+    const text = k === "x_mentions_7d" && truncated && v !== "—" ? `${v}+` : v;
+    if (text === "—") return text;
+    const url = linkFor(k, r);
+    return url ? link(text, url) : text;
   };
   const body = rows.map((r) => `| ${cols.map((c) => cell(r, c)).join(" | ")} |`).join("\n");
   const csvLink = `data/${date}/rankings/${table.name}.csv`;

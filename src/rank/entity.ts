@@ -30,6 +30,12 @@ export interface Entity {
   chUpdatedAt?: string;
   chOfficialFeed?: boolean;
   chPublisher?: string;
+  /**
+   * ClawHub handle that owns the skill page — the one segment its public URL needs and
+   * the list API never returns. Filled from the official feed's publisher, or from the
+   * upstream link SkillHub records for the skills it mirrors.
+   */
+  chOwner?: string;
   /** Tencent SkillHub (China-region counters; attached via upstream join or own entity) */
   shDownloads?: number;
   shInstalls?: number;
@@ -115,7 +121,10 @@ export function buildEntities(rawDir: string): Map<string, Entity> {
     const e = bySlug.get(slug.toLowerCase());
     if (e) {
       e.chOfficialFeed = true;
-      if (r["publisher"]) e.chPublisher = r["publisher"];
+      if (r["publisher"]) {
+        e.chPublisher = r["publisher"];
+        e.chOwner ??= r["publisher"];
+      }
     }
   }
 
@@ -130,6 +139,9 @@ export function buildEntities(rawDir: string): Map<string, Entity> {
     if (target) {
       e = target;
       e.shMatch = "upstream";
+      // The upstream link carries the owner handle, which is the only way most ClawHub
+      // skills get one: the list API omits it and the official feed covers a fraction.
+      target.chOwner ??= upstream.match(/clawhub\.ai\/([^/]+)\/(?:skills\/)?[^/]+$/)?.[1];
     } else {
       const key = `sh:${slug}`.toLowerCase();
       e = entities.get(key) ?? { key, name: slug, platform: "skillhub-cn" };
