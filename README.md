@@ -20,7 +20,7 @@ rank/        entity resolution (fully-qualified keys, cross-platform links only 
              nine rankings + a five-dimension weighted index
    ↓
 publish/     write CSVs to ../best-skills/data/YYYY-MM-DD/{raw,rankings}/
-             render the ranking previews into the data repo's READMEs, one per language
+             render previews into README.md and docs/README.*.md, one per language
    ↓
 validate.ts  publication gate — row-count floors, sort monotonicity, rank continuity,
              directory closure, day-over-day drift, sanity anchors

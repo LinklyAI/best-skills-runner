@@ -1,9 +1,10 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { env, REPO_ROOT } from "../lib/env.js";
 import { writeCsv } from "../lib/csv.js";
 import { log } from "../lib/log.js";
+import { LOCALES } from "./locales.js";
 import type { RawTable } from "../sources/types.js";
 
 export function dataRepoPath(): string {
@@ -52,18 +53,20 @@ export function refreshLatest(date: string): void {
 
 export function commitAndPush(date: string): void {
   const repo = dataRepoPath();
-  const run = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  const run = (args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
   // Commit local changes FIRST — `pull --rebase` refuses to run over unstaged changes.
-  // The pathspec covers the English README and every translation: they all carry the
-  // rankings block, so a run that only moved a translation still has something to commit.
-  run("git add data 'README*.md'");
-  const status = run("git status --porcelain data 'README*.md'");
+  // Only pass README paths that exist. This keeps publishing compatible while the
+  // data repo and runner roll out their directory changes in separate commits.
+  const readmePaths = LOCALES.map((locale) => locale.file).filter((file) => existsSync(join(repo, file)));
+  const publishPaths = ["data", ...readmePaths];
+  run(["add", "--", ...publishPaths]);
+  const status = run(["status", "--porcelain", "--", ...publishPaths]);
   if (!status.trim()) {
     log.info("publish", "no data changes to commit");
     return;
   }
-  run(`git commit --quiet -m "data: ${date}"`);
-  run("git pull --rebase --quiet");
-  run("git push --quiet");
+  run(["commit", "--quiet", "-m", `data: ${date}`]);
+  run(["pull", "--rebase", "--quiet"]);
+  run(["push", "--quiet"]);
   log.info("publish", `pushed data for ${date}`);
 }

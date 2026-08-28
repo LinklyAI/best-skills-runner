@@ -1,7 +1,7 @@
 /**
  * README copy, one entry per language.
  *
- * The data repo keeps a README per language, each carrying the same
+ * The data repo keeps a README per language in the repo root or docs/, each carrying the same
  * <!-- RANKINGS:START/END --> markers, so the daily run refreshes every one of them.
  *
  * Column keys live in COLUMNS once, shared by all languages: a translation supplies
@@ -11,7 +11,7 @@
  * header, the "last updated" line and the full-list link prefix. Table data (skill
  * names, vendors, numbers) is language-neutral by nature.
  *
- * Adding a language: create README.<code>.md in the data repo with the markers in
+ * Adding a language: create docs/README.<code>.md in the data repo with the markers in
  * place, then append a Locale here. Both halves are needed — a README without an
  * entry never gets rendered, an entry without a README is skipped with a warning.
  */
@@ -32,8 +32,10 @@ export const COLUMNS: Record<string, readonly string[]> = {
 };
 
 export interface Locale {
-  /** README file name in the data repo root. */
+  /** README path relative to the data repo root. */
   file: string;
+  /** Prefix from the README directory back to the data repo root. */
+  rootPrefix: string;
   /** The line above the lists. */
   lastUpdated: (date: string) => string;
   /**
@@ -50,6 +52,7 @@ export interface Locale {
 /** English is the fallback for every other language, so its copy must be complete. */
 const EN: Locale = {
   file: "README.md",
+  rootPrefix: "",
   lastUpdated: (date) =>
     `> Last updated: **${date}** (UTC) · Top ${PREVIEW_ROWS} preview per list — full Top 100 in the CSVs.`,
   fullList: "➡️ Full list: ",
@@ -78,7 +81,8 @@ const EN: Locale = {
 };
 
 const ZH_CN: Locale = {
-  file: "README.zh-CN.md",
+  file: "docs/README.zh-CN.md",
+  rootPrefix: "../",
   lastUpdated: (date) =>
     `> 最后更新：**${date}**（UTC）· 每个榜单预览 Top ${PREVIEW_ROWS}——完整 Top 100 见 CSV 文件。`,
   fullList: "➡️ 完整榜单：",
@@ -106,7 +110,8 @@ const ZH_CN: Locale = {
 };
 
 const JA: Locale = {
-  file: "README.ja.md",
+  file: "docs/README.ja.md",
+  rootPrefix: "../",
   lastUpdated: (date) =>
     `> 最終更新：**${date}**（UTC）· 各リストの Top ${PREVIEW_ROWS} を表示——完全な Top 100 は CSV を参照してください。`,
   fullList: "➡️ 完全版：",
@@ -134,7 +139,8 @@ const JA: Locale = {
 };
 
 const KO: Locale = {
-  file: "README.ko.md",
+  file: "docs/README.ko.md",
+  rootPrefix: "../",
   lastUpdated: (date) =>
     `> 마지막 업데이트: **${date}** (UTC) · 각 목록의 Top ${PREVIEW_ROWS} 미리 보기 — 전체 Top 100은 CSV에서 확인하세요.`,
   fullList: "➡️ 전체 목록: ",
@@ -162,7 +168,8 @@ const KO: Locale = {
 };
 
 const DE: Locale = {
-  file: "README.de.md",
+  file: "docs/README.de.md",
+  rootPrefix: "../",
   lastUpdated: (date) =>
     `> Zuletzt aktualisiert: **${date}** (UTC) · Top-${PREVIEW_ROWS}-Vorschau je Liste – die vollständigen Top 100 stehen in den CSV-Dateien.`,
   fullList: "➡️ Vollständige Liste: ",
@@ -190,7 +197,8 @@ const DE: Locale = {
 };
 
 const ES: Locale = {
-  file: "README.es.md",
+  file: "docs/README.es.md",
+  rootPrefix: "../",
   lastUpdated: (date) =>
     `> Última actualización: **${date}** (UTC) · Vista previa del Top ${PREVIEW_ROWS} de cada lista; el Top 100 completo está en los CSV.`,
   fullList: "➡️ Lista completa: ",

@@ -68,7 +68,7 @@ function renderTable(table: RawTable, date: string, locale: Locale): string {
     return url ? link(text, url) : text;
   };
   const body = rows.map((r) => `| ${cols.map((c) => cell(r, c)).join(" | ")} |`).join("\n");
-  const csvLink = `data/${date}/rankings/${table.name}.csv`;
+  const csvLink = `${locale.rootPrefix}data/${date}/rankings/${table.name}.csv`;
   const title = titleOf(locale, table.name);
   return `<details${table.name === "best-100" ? " open" : ""}>\n<summary><b>${title}</b></summary>\n\n${header}\n${sep}\n${body}\n\n${locale.fullList}[${table.name}.csv](${csvLink})\n\n</details>`;
 }
@@ -89,9 +89,18 @@ function renderBlock(date: string, tables: RawTable[], locale: Locale): string {
  */
 function warnUnregistered(repoPath: string): void {
   const known = new Set(LOCALES.map((l) => l.file));
-  for (const f of readdirSync(repoPath)) {
-    if (/^README\..+\.md$/.test(f) && !known.has(f)) {
-      log.warn("readme", `${f} has no entry in locales.ts — it will never be refreshed`);
+  const candidates = readdirSync(repoPath).filter((f) => /^README\..+\.md$/.test(f));
+  const docsPath = join(repoPath, "docs");
+  if (existsSync(docsPath)) {
+    candidates.push(
+      ...readdirSync(docsPath)
+        .filter((f) => /^README\..+\.md$/.test(f))
+        .map((f) => `docs/${f}`),
+    );
+  }
+  for (const file of candidates) {
+    if (!known.has(file)) {
+      log.warn("readme", `${file} has no entry in locales.ts — it will never be refreshed`);
     }
   }
 }
