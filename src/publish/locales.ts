@@ -225,9 +225,39 @@ const ES: Locale = {
   },
 };
 
+const RU: Locale = {
+  file: "docs/README.ru.md",
+  rootPrefix: "../",
+  lastUpdated: (date) =>
+    `> Последнее обновление: **${date}** (UTC) · Предпросмотр Top ${PREVIEW_ROWS} для каждого рейтинга — полный Top 100 доступен в CSV.`,
+  fullList: "➡️ Полный список: ",
+  titles: {
+    "best-100": "🏆 Лучшие 100 (рейтинг целесообразности установки)",
+    "top-installs": "📈 Лидеры по установкам (все экосистемы)",
+    "trending-7d": "🚀 В тренде (7 дней)",
+    "social-buzz": "💬 Обсуждаемость (X · HN · Bluesky · GitHub, 7 дней)",
+    "most-active": "🔧 Самые активные (популярные и регулярно обновляемые)",
+    "official-100": "✅ Официальные 100 (проверенные издатели)",
+    "official-vendors": "🏢 Официальные издатели (по платформам)",
+    "top-repos": "⭐ Лучшие репозитории",
+    "rising-stars": "🌱 Восходящие звёзды (младше 30 дней)",
+  },
+  labels: {
+    "best-100": { rank: "#", skill: "Skill", vendor: "Издатель", wis: "WIS", coverage: "Охват" },
+    "top-installs": { rank: "#", skill: "Skill", installs_skillssh: "skills.sh", downloads_clawhub: "ClawHub", downloads_skillhub_cn: "SkillHub Китай" },
+    "trending-7d": { rank: "#", skill: "Skill", installs_skillssh: "Установки", growth_pct: "Недельный Δ%" },
+    "social-buzz": { rank: "#", skill: "Skill", x_mentions_7d: "X", hn_hits_7d: "HN", bsky_hits_7d: "Bluesky", gh_mentions_7d: "GitHub" },
+    "most-active": { rank: "#", skill: "Skill", last_update: "Обновлено", versions_clawhub: "Версии" },
+    "official-100": { rank: "#", skill: "Skill", vendor: "Издатель", verified_by: "Проверено" },
+    "official-vendors": { rank: "#", platform: "Платформа", vendor: "Издатель", skills_count: "Skills", total_installs_or_downloads: "Установки/скачивания" },
+    "top-repos": { rank: "#", repo: "Репозиторий", stars: "Stars", pushed_at: "Последний push" },
+    "rising-stars": { rank: "#", skill: "Skill", first_seen_days: "Возраст (дни)", pop_score: "Популярность" },
+  },
+};
+
 /** English first: it is the fallback, and rendering it is what must never silently fail. */
 export const BASE = EN;
-export const LOCALES: readonly Locale[] = [EN, ZH_CN, JA, KO, DE, ES];
+export const LOCALES: readonly Locale[] = [EN, ZH_CN, JA, KO, DE, ES, RU];
 
 /** Column header for a list, falling back to English and then to the raw column key. */
 export function labelOf(locale: Locale, list: string, col: string): string {
