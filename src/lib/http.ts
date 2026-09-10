@@ -7,8 +7,10 @@ export interface FetchOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
   retries?: number;
-  /** Delay between retries; doubles each attempt. */
+  /** Base delay between retries; doubles each attempt. */
   retryDelayMs?: number;
+  /** Treat Retry-After as a minimum and add jitter to exponential backoff. */
+  retryBackoffWithJitter?: boolean;
 }
 
 /**
@@ -38,8 +40,29 @@ function isRetryable(status: number): boolean {
   return status === 403 || status === 429 || status >= 500;
 }
 
+function retryDelay(
+  attempt: number,
+  baseDelayMs: number,
+  retryAfter: string | null,
+  backoffWithJitter: boolean,
+): number {
+  const retryAfterMs = retryAfter === null ? 0 : Number(retryAfter) * 1000;
+  const serverDelayMs = Number.isFinite(retryAfterMs) && retryAfterMs >= 0 ? retryAfterMs : 0;
+  const backoffMs = baseDelayMs * 2 ** attempt;
+  if (!backoffWithJitter) return serverDelayMs || backoffMs;
+  const floorMs = Math.max(serverDelayMs, backoffMs);
+  const jitterMs = Math.floor(Math.random() * Math.min(1_000, Math.max(1, floorMs * 0.2)));
+  return floorMs + jitterMs;
+}
+
 async function fetchWithRetry(url: string, opts: FetchOptions = {}): Promise<Response> {
-  const { headers = {}, timeoutMs = 60_000, retries = 2, retryDelayMs = 2_000 } = opts;
+  const {
+    headers = {},
+    timeoutMs = 60_000,
+    retries = 2,
+    retryDelayMs = 2_000,
+    retryBackoffWithJitter = false,
+  } = opts;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -51,17 +74,22 @@ async function fetchWithRetry(url: string, opts: FetchOptions = {}): Promise<Res
         const diag = await describeHttpError(res);
         lastErr = new Error(`${diag} for ${url}`);
         if (attempt >= retries) break;
-        const retryAfter = Number(res.headers.get("retry-after")) * 1000 || retryDelayMs * 2 ** attempt;
-        log.warn("http", `${diag} on ${url}, retrying in ${retryAfter}ms`);
-        await sleep(retryAfter);
+        const delay = retryDelay(
+          attempt,
+          retryDelayMs,
+          res.headers.get("retry-after"),
+          retryBackoffWithJitter,
+        );
+        log.info("http", `${diag} on ${url}, retrying in ${delay}ms`);
+        await sleep(delay);
         continue;
       }
       return res;
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
-        const delay = retryDelayMs * 2 ** attempt;
-        log.warn("http", `${String(err)} on ${url}, retrying in ${delay}ms`);
+        const delay = retryDelay(attempt, retryDelayMs, null, retryBackoffWithJitter);
+        log.info("http", `${String(err)} on ${url}, retrying in ${delay}ms`);
         await sleep(delay);
       }
     }

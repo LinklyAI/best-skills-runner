@@ -1,10 +1,11 @@
-import { fetchJson, sleep } from "../lib/http.js";
+import { fetchJson, sleep, type FetchOptions } from "../lib/http.js";
 import { log } from "../lib/log.js";
 import type { Collector, RawTable } from "./types.js";
 
 const BASE = "https://clawhub.ai";
 const TARGET = 1000;
-const PAGE_LIMIT = 100;
+const PAGE_LIMIT = 200;
+const RETRY_OPTIONS = { retries: 4, retryDelayMs: 2_000, retryBackoffWithJitter: true } as const;
 
 interface ClawHubSkill {
   slug: string;
@@ -31,12 +32,12 @@ interface FeedEntry {
   publisher?: { id?: string; trust?: string };
 }
 
-async function fetchPage(cursor?: string): Promise<ListResponse> {
+async function fetchPage(cursor?: string, opts?: FetchOptions): Promise<ListResponse> {
   const url = new URL(`${BASE}/api/v1/skills`);
   url.searchParams.set("sort", "downloads");
   url.searchParams.set("limit", String(PAGE_LIMIT));
   if (cursor) url.searchParams.set("cursor", cursor);
-  return fetchJson<ListResponse>(url.toString());
+  return fetchJson<ListResponse>(url.toString(), opts);
 }
 
 export const clawhub: Collector = {
@@ -54,7 +55,7 @@ export const clawhub: Collector = {
     const all: ClawHubSkill[] = [];
     let cursor: string | undefined;
     while (all.length < TARGET) {
-      const page = await fetchPage(cursor);
+      const page = await fetchPage(cursor, RETRY_OPTIONS);
       const items = page.skills ?? page.items ?? [];
       if (items.length === 0) break;
       all.push(...items);
@@ -70,7 +71,7 @@ export const clawhub: Collector = {
     log.info("clawhub", `collected ${all.length} skills`);
 
     await sleep(800);
-    const feed = await fetchJson<{ entries?: FeedEntry[] }>(`${BASE}/v1/feeds/skills`);
+    const feed = await fetchJson<{ entries?: FeedEntry[] }>(`${BASE}/v1/feeds/skills`, RETRY_OPTIONS);
     const entries = feed.entries ?? [];
     log.info("clawhub", `official feed: ${entries.length} entries`);
 
