@@ -1,6 +1,6 @@
 # best-skills-trigger
 
-A Cloudflare Worker whose only job is to start the [`daily` workflow](https://github.com/LinklyAI/best-skills/blob/main/.github/workflows/daily.yml) in the data repo at **01:17 UTC** every day.
+A Cloudflare Worker whose only job is to start the [`daily` workflow](https://github.com/LinklyAI/best-skills/blob/main/.github/workflows/daily.yml) in the data repo at **00:30 UTC** every day.
 
 GitHub's own `schedule:` trigger is best-effort: on the Free plan it has been firing 4–5 hours late (around 06:00 UTC) since late August 2026, and the delay does not depend on the cron slot. A `workflow_dispatch` call through the REST API creates the run immediately, so this Worker is the primary trigger. The workflow keeps its `schedule:` as a fallback — when the Worker already published today, that late run sees `data/<today>/` in the repo and skips itself.
 
@@ -35,7 +35,7 @@ Manual dispatch without waiting for the cron:
 
 ```bash
 pnpm dev                          # then, in another shell:
-curl "http://localhost:8787/__scheduled?cron=17+1+*+*+*"
+curl "http://localhost:8787/__scheduled?cron=30+0+*+*+*"
 ```
 
 That needs `GITHUB_TOKEN` in `trigger/.dev.vars` (git-ignored). In production, `wrangler tail` shows each firing, and the run should appear within seconds at https://github.com/LinklyAI/best-skills/actions/workflows/daily.yml with event `workflow_dispatch`.

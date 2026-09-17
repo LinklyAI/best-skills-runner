@@ -11,11 +11,12 @@
 		"WORKFLOW_FILE": "daily.yml",
 		"WORKFLOW_REF": "main"
 	},
-	// 01:17 UTC — right after the UTC day rolls over (data is archived by UTC
-	// date). Same slot daily.yml's own `schedule:` asks for; GitHub's cron queue
-	// delivers that one 4-5 h late, this one fires on the minute.
+	// 00:30 UTC — after the UTC day rolls over (data is archived by UTC date),
+	// with half an hour of margin for the registries' own midnight roll-ups and
+	// for the runner-pool rush at the top of the hour. daily.yml's own
+	// `schedule:` (01:17) arrives 4-5 h late; this one fires on the minute.
 	"triggers": {
-		"crons": ["17 1 * * *"]
+		"crons": ["30 0 * * *"]
 	},
 	"observability": {
 		"enabled": true

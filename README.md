@@ -8,7 +8,7 @@ The data pipeline behind [**LinklyAI/best-skills**](https://github.com/LinklyAI/
 
 Every skills registry only sees its own ecosystem: skills.sh counts Claude/Vercel CLI installs, ClawHub counts OpenClaw downloads, SkillHub counts installs from China — and none of them see social traction. This pipeline collects all of them once a day, merges them into a single entity graph, computes nine rankings, validates the output, and publishes it as open CSV.
 
-Runs on GitHub Actions every day at 01:17 UTC — the workflow lives in the [data repo](https://github.com/LinklyAI/best-skills/blob/main/.github/workflows/daily.yml), which checks this one out and runs it. It is started by a small Cloudflare Worker ([`trigger/`](trigger/)) because GitHub's own cron has been arriving hours late; the workflow's `schedule:` remains as a fallback. Everything the pipeline produces lives in that repo; there is no database and no server.
+Runs on GitHub Actions every day at 00:30 UTC — the workflow lives in the [data repo](https://github.com/LinklyAI/best-skills/blob/main/.github/workflows/daily.yml), which checks this one out and runs it. It is started by a small Cloudflare Worker ([`trigger/`](trigger/)) because GitHub's own cron has been arriving hours late; the workflow's `schedule:` remains as a fallback. Everything the pipeline produces lives in that repo; there is no database and no server.
 
 ## Pipeline
 
