@@ -4,3 +4,6 @@ cache/
 .env
 *.log
 .DS_Store
+trigger/.dev.vars
+trigger/worker-configuration.d.ts
+trigger/.wrangler/

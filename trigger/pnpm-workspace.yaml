@@ -1,0 +1,5 @@
+# Standalone package: keeps wrangler out of the pipeline's dependency-free root install.
+# workerd needs its postinstall to fetch the local runtime binary used by `wrangler dev`.
+allowBuilds:
+  esbuild: true
+  workerd: true

@@ -1,0 +1,23 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "best-skills-trigger",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-01",
+	// Cron-only Worker: no HTTP surface, so no workers.dev hostname either.
+	"workers_dev": false,
+	"preview_urls": false,
+	"vars": {
+		"GITHUB_REPO": "LinklyAI/best-skills",
+		"WORKFLOW_FILE": "daily.yml",
+		"WORKFLOW_REF": "main"
+	},
+	// 01:17 UTC — right after the UTC day rolls over (data is archived by UTC
+	// date). Same slot daily.yml's own `schedule:` asks for; GitHub's cron queue
+	// delivers that one 4-5 h late, this one fires on the minute.
+	"triggers": {
+		"crons": ["17 1 * * *"]
+	},
+	"observability": {
+		"enabled": true
+	}
+}
