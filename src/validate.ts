@@ -5,7 +5,7 @@ import { log } from "./lib/log.js";
 
 /** Minimum row counts per raw file. Tripping these means a source silently degraded. */
 const RAW_MIN_ROWS: Record<string, number> = {
-  "skills-sh": 1500,
+  "skills-sh": 1100, // three views × ~600; two views (one lost after retries) still ship
   "skills-sh-official": 50,
   clawhub: 900,
   "clawhub-official": 500,
@@ -50,13 +50,22 @@ export interface ValidationResult {
   warnings: string[];
 }
 
+export interface ValidateOptions {
+  /**
+   * Raw files whose day-over-day drift is accepted for this run (a confirmed
+   * upstream change, e.g. a registry delisting a publisher). Reported as a
+   * warning instead of an error so the run stays auditable in the log.
+   */
+  allowDrift?: ReadonlySet<string>;
+}
+
 function isNonNegNumber(s: string): boolean {
   if (s === "") return true;
   const n = Number(s);
   return Number.isFinite(n) && n >= 0;
 }
 
-export function validate(dataDir: string, date: string): ValidationResult {
+export function validate(dataDir: string, date: string, opts: ValidateOptions = {}): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
   const dayDir = join(dataDir, date);
@@ -100,7 +109,11 @@ export function validate(dataDir: string, date: string): ValidationResult {
         const prevRows = readCsv(prevPath).length;
         if (prevRows > 0) {
           const drift = Math.abs(rows.length - prevRows) / prevRows;
-          if (drift > MAX_ROW_DRIFT) errors.push(`raw/${name}.csv row count drifted ${(drift * 100).toFixed(0)}% vs ${prevDate} (${prevRows} → ${rows.length})`);
+          if (drift > MAX_ROW_DRIFT) {
+            const msg = `raw/${name}.csv row count drifted ${(drift * 100).toFixed(0)}% vs ${prevDate} (${prevRows} → ${rows.length})`;
+            if (opts.allowDrift?.has(name)) warnings.push(`${msg} — accepted via --allow-drift`);
+            else errors.push(msg);
+          }
         }
       }
     }

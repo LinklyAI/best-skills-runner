@@ -4,6 +4,20 @@ import type { Collector, RawTable } from "./types.js";
 
 const BASE = "https://www.skills.sh";
 
+/**
+ * skills.sh occasionally serves a page whose RSC payload carries no skills list
+ * (HTTP 200, layout intact) — the HTTP layer cannot see that, so retry at the
+ * parse level before declaring the view lost.
+ */
+const VIEW_ATTEMPTS = 3;
+const VIEW_RETRY_DELAY_MS = 5_000;
+
+const VIEWS = [
+  { view: "all-time", path: "/" },
+  { view: "trending", path: "/trending" },
+  { view: "hot", path: "/hot" },
+] as const;
+
 interface SkillsShSkill {
   source: string;
   skillId?: string;
@@ -77,7 +91,7 @@ function tryParseArrayAt(payload: string, start: number): unknown[] | null {
   return null;
 }
 
-async function fetchView(path: string, view: string): Promise<SkillsShSkill[]> {
+async function fetchViewOnce(path: string, view: string): Promise<SkillsShSkill[]> {
   const html = await fetchText(`${BASE}${path}`);
   const payload = decodeFlightPayload(html);
   const candidates = [
@@ -90,6 +104,22 @@ async function fetchView(path: string, view: string): Promise<SkillsShSkill[]> {
   }
   log.info("skills-sh", `${view}: ${best.length} skills`);
   return best;
+}
+
+async function fetchView(path: string, view: string): Promise<SkillsShSkill[]> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= VIEW_ATTEMPTS; attempt++) {
+    try {
+      return await fetchViewOnce(path, view);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < VIEW_ATTEMPTS) {
+        log.warn("skills-sh", `${view}: ${String(err)} — retry ${attempt}/${VIEW_ATTEMPTS - 1}`);
+        await sleep(VIEW_RETRY_DELAY_MS * attempt);
+      }
+    }
+  }
+  throw lastErr;
 }
 
 async function fetchOfficialOwners(): Promise<OfficialOwner[]> {
@@ -114,19 +144,24 @@ export const skillsSh: Collector = {
   },
 
   async collect(): Promise<RawTable[]> {
-    const allTime = await fetchView("/", "all-time");
-    await sleep(1000);
-    const trending = await fetchView("/trending", "trending");
-    await sleep(1000);
-    const hot = await fetchView("/hot", "hot");
-    await sleep(1000);
+    // One lost view must not discard the others: the validator decides whether
+    // what remains is publishable (all-time anchor, trending-7d floor).
+    const byView: Array<{ view: string; skills: SkillsShSkill[] }> = [];
+    const lostViews: string[] = [];
+    for (const { view, path } of VIEWS) {
+      try {
+        byView.push({ view, skills: await fetchView(path, view) });
+      } catch (err) {
+        lostViews.push(view);
+        log.warn("skills-sh", `${view}: giving up after ${VIEW_ATTEMPTS} attempts — ${String(err)}`);
+      }
+      await sleep(1000);
+    }
+    if (byView.length === 0) {
+      throw new Error(`skills.sh: all views failed (${lostViews.join(", ")})`);
+    }
     const owners = await fetchOfficialOwners();
 
-    const byView = [
-      { view: "all-time", skills: allTime },
-      { view: "trending", skills: trending },
-      { view: "hot", skills: hot },
-    ];
     const skillRows = byView.flatMap(({ view, skills }) =>
       skills.map((s, i) => ({
         view,

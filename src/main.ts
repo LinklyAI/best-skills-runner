@@ -20,6 +20,11 @@ const onlyArg = process.argv.find((a) => a.startsWith("--only="));
 const only = onlyArg ? new Set(onlyArg.slice("--only=".length).split(",")) : null;
 const want = (id: string): boolean => only === null || only.has(id);
 const BUZZ_TOP_N = 100;
+/** --allow-drift=clawhub-official,… — accept a confirmed upstream row-count change for this run only. */
+const allowDriftArg = process.argv.find((a) => a.startsWith("--allow-drift="));
+const allowDrift = new Set(
+  (allowDriftArg?.slice("--allow-drift=".length) ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+);
 
 /** --date=YYYY-MM-DD — operate on a specific day (e.g. re-rank yesterday after a pipeline fix). */
 const dateArg = process.argv.find((a) => a.startsWith("--date="))?.slice("--date=".length);
@@ -97,7 +102,7 @@ async function main(): Promise<void> {
   writeRankings(date, rankings);
   renderReadme(repoPath, date, rankings);
 
-  const result = validate(dataDir, date);
+  const result = validate(dataDir, date, { allowDrift });
   if (failures.length > 0) {
     result.warnings.push(`${failures.length} source(s) failed during collect: ${failures.join(" | ")}`);
   }
