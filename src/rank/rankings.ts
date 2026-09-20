@@ -178,19 +178,66 @@ function pageUrl(s: Scored): string | undefined {
   return undefined;
 }
 
+/**
+ * skills.sh sources are `owner/repo` on GitHub. A bare domain (open.feishu.cn,
+ * skills.volces.com) is a vendor registry: no GitHub repo, and the CLI install
+ * command we could derive for it is unverified, so both stay empty.
+ */
+function githubRepo(s: Scored): string | undefined {
+  return s.ssSource && s.ssSource.includes("/") ? s.ssSource : undefined;
+}
+
+function repoUrl(s: Scored): string | undefined {
+  const repo = githubRepo(s);
+  return repo ? `https://github.com/${repo}` : undefined;
+}
+
+/**
+ * Copy-pasteable install command for the entity's primary platform, in the form each
+ * registry shows on its own skill page. ClawHub needs the owner handle (same gap as
+ * `pageUrl`); SkillHub's own skills have no verified CLI command, so they stay empty.
+ */
+function installCommand(s: Scored): string | undefined {
+  if (s.platform === "skills.sh") {
+    const repo = githubRepo(s);
+    return repo ? `npx skills add https://github.com/${repo} --skill ${s.name}` : undefined;
+  }
+  if (s.platform === "clawhub" && s.chSlug && s.chOwner) {
+    return `openclaw skills install @${s.chOwner}/${s.chSlug}`;
+  }
+  return undefined;
+}
+
 const IDENT = (s: Scored): Row => ({
   skill: s.name,
+  skill_key: s.key,
   platform: s.platform,
   vendor: s.vendor,
   source_skillssh: s.ssSource,
   slug_clawhub: s.chSlug,
   url: pageUrl(s),
+  repo_url: repoUrl(s),
+  install: installCommand(s),
   match: s.match,
   description: s.description,
   description_zh: s.descriptionZh,
 });
 
-const IDENT_COLS = ["skill", "platform", "vendor", "source_skillssh", "slug_clawhub", "url", "match", "description", "description_zh"];
+// Column dictionary for consumers lives in ../best-skills/llms.txt — keep the two in sync.
+const IDENT_COLS = [
+  "skill",
+  "skill_key",
+  "platform",
+  "vendor",
+  "source_skillssh",
+  "slug_clawhub",
+  "url",
+  "repo_url",
+  "install",
+  "match",
+  "description",
+  "description_zh",
+];
 
 /** Maintain the cumulative first-seen index (data/index/first-seen.csv). */
 function updateFirstSeen(dataDir: string, date: string, entities: Entity[]): { firstSeen: Map<string, string>; earliest: string } {
