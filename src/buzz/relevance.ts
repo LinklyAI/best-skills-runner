@@ -1,74 +1,92 @@
-import { env } from "../lib/env.js";
 import { log } from "../lib/log.js";
-import { sleep } from "../lib/http.js";
+import { noulOf, type JevClient, type NoulQuestion } from "../judge/jev.js";
 
-const BATCH = 30;
-const DEFAULT_MODEL = "google/gemini-2.5-flash-lite";
+/** Posts per jev request. One request carries every item plus one question per item. */
+const BATCH = 50;
+
+/**
+ * A post counts as a mention when P(relevant) reaches this. Summing raw probabilities
+ * instead was tried and rejected: jev leaves a 0.02–0.05 floor on clearly unrelated
+ * posts, and on a noisy name that floor adds up to phantom mentions (measured on
+ * "github": 188 HN hits, where the old yes/no filter had counted 0, summed to 15).
+ */
+export const RELEVANT_FROM = 0.5;
 
 export interface Candidate {
   id: string;
   text: string;
 }
 
-const SYSTEM_PROMPT =
-  "You filter search results for an AI agent-skills popularity index. " +
-  "Given a skill name (and optional description) plus a list of posts/titles that matched a keyword search, " +
-  "decide for each item whether it is genuinely about that AI agent skill / tool " +
-  "(installing it, using it, discussing it) — as opposed to an unrelated everyday use of the same words. " +
-  "When the skill name is an everyday word (weather, github, prototype…), an item is relevant ONLY if it " +
-  "explicitly refers to an AI agent / Claude / LLM skill by that name — a post merely about the everyday topic " +
-  "(a weather app, the GitHub platform itself) is NOT relevant, even if it matches the description's subject. " +
-  'Respond with ONLY a JSON object mapping each item id to true (relevant) or false. When unsure, answer false.';
+const CRITERIA: NoulQuestion["criteria"] = {
+  true:
+    "The item is genuinely about the named AI agent skill / tool: installing it, using it, " +
+    "or discussing it as an AI agent / Claude / LLM skill.",
+  false:
+    "The item only shares words with the skill name — for example it is about the everyday topic " +
+    "(a weather app, the GitHub platform itself, a product prototype) or about a different product " +
+    "with the same name — without referring to the AI agent skill.",
+};
+
+function question(itemKey: string): NoulQuestion {
+  return {
+    type: "noul",
+    instructions:
+      `Consider only item \`items.${itemKey}\`. Is it genuinely about the AI agent skill named \`skill\` ` +
+      "(see `description` when present)? When the skill name is an everyday word or phrase, the item counts " +
+      "only if it explicitly refers to an AI agent / Claude / LLM skill or tool by that name.",
+    criteria: CRITERIA,
+  };
+}
 
 /**
- * LLM relevance filter. Returns null when the LLM is unavailable or every batch failed,
- * so callers can fall back to raw counts EXPLICITLY instead of silently zeroing (audit B10).
+ * Relevance probability per candidate, from jev.
+ *
+ * Returns null when jev is unavailable or every batch failed, so callers can fall back
+ * to raw counts EXPLICITLY instead of silently zeroing (audit B10). Candidates missing
+ * from a partially failed run are left out of the map; callers scale over what was scored.
  */
-export async function filterRelevant(
+export async function scoreRelevance(
+  jev: JevClient | null,
   skillName: string,
   skillDesc: string | undefined,
   candidates: Candidate[],
-): Promise<Map<string, boolean> | null> {
+): Promise<Map<string, number> | null> {
+  if (!jev) return null;
   if (candidates.length === 0) return new Map();
-  const apiBase = env("LLM_API_BASE");
-  const apiKey = env("LLM_API_KEY");
-  if (!apiBase || !apiKey) return null;
-  const model = env("LLM_MODEL") ?? DEFAULT_MODEL;
 
-  const out = new Map<string, boolean>();
+  const out = new Map<string, number>();
   let anySuccess = false;
   for (let i = 0; i < candidates.length; i += BATCH) {
     const batch = candidates.slice(i, i + BATCH);
+    // Positional keys keep ids like HN objectIDs or Bluesky indexes out of the prompt.
+    const items: Record<string, string> = {};
+    const questions: Record<string, NoulQuestion> = {};
+    batch.forEach((c, j) => {
+      const key = `i${j}`;
+      items[key] = c.text;
+      questions[key] = question(key);
+    });
     try {
-      const res = await fetch(`${apiBase}/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            {
-              role: "user",
-              content: JSON.stringify({ skill: skillName, description: skillDesc?.slice(0, 150), items: batch }),
-            },
-          ],
-          temperature: 0,
-        }),
-        signal: AbortSignal.timeout(90_000),
+      const res = await jev.ask({ skill: skillName, description: skillDesc?.slice(0, 300), items }, questions);
+      batch.forEach((c, j) => {
+        const p = noulOf(res.answers[`i${j}`]);
+        if (p !== undefined) out.set(c.id, p);
       });
-      if (!res.ok) throw new Error(`LLM HTTP ${res.status}`);
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      const content = data.choices?.[0]?.message?.content ?? "";
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("no JSON in LLM output");
-      for (const [id, v] of Object.entries(JSON.parse(jsonMatch[0]) as Record<string, unknown>)) {
-        out.set(id, v === true || v === "true");
-      }
       anySuccess = true;
     } catch (err) {
       log.warn("relevance", `${skillName} batch ${i / BATCH}: ${String(err)}`);
     }
-    await sleep(300);
   }
   return anySuccess ? out : null;
+}
+
+/**
+ * Scale the relevant share of a sample up to the platform's total hit count.
+ * `sampled` is the candidate list the probabilities were requested for.
+ */
+export function estimateCount(verdict: Map<string, number>, sampled: Candidate[], total: number): number {
+  const scored = sampled.filter((c) => verdict.has(c.id));
+  if (scored.length === 0) return 0;
+  const relevant = scored.filter((c) => (verdict.get(c.id) ?? 0) >= RELEVANT_FROM).length;
+  return Math.round((relevant / scored.length) * total);
 }

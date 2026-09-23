@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { readCsv, writeCsv } from "../lib/csv.js";
 import { log } from "../lib/log.js";
 import type { RawTable } from "../sources/types.js";
+import { isExcluded } from "../judge/quality.js";
 import { buildEntities, type Entity } from "./entity.js";
 import { percentiler, weightedMean, recency, round3, NEUTRAL } from "./score.js";
 
@@ -221,6 +222,8 @@ const IDENT = (s: Scored): Row => ({
   match: s.match,
   description: s.description,
   description_zh: s.descriptionZh,
+  category: s.category,
+  flags: s.flags?.join("|"),
 });
 
 // Column dictionary for consumers lives in ../best-skills/llms.txt — keep the two in sync.
@@ -238,6 +241,12 @@ const IDENT_COLS = [
   "description",
   "description_zh",
 ];
+
+/**
+ * Columns added after v1.4 go at the END of every skill list, never into IDENT_COLS:
+ * consumers that read columns by position must keep working (backward compatibility).
+ */
+const TAIL_COLS = ["category", "flags"];
 
 /** Maintain the cumulative first-seen index (data/index/first-seen.csv). */
 function updateFirstSeen(dataDir: string, date: string, entities: Entity[]): { firstSeen: Map<string, string>; earliest: string } {
@@ -264,9 +273,16 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // so published numbers are reproducible from the CSVs alone (audit SC-16).
   const refMs = Date.parse(`${date}T00:00:00Z`) + 86_400_000;
   const entities = [...buildEntities(rawDir).values()];
-  const scored = computeScores(entities, refMs);
+  // Entities jev judged not-a-skill, deprecated or harmful stay in raw data but are left
+  // out before scoring, so they neither rank nor shift the percentiles of real skills.
+  // Warning-only flags (coercive) ride along in the `flags` column instead.
+  const excluded = entities.filter((e) => isExcluded(e.flags));
+  const scored = computeScores(
+    entities.filter((e) => !isExcluded(e.flags)),
+    refMs,
+  );
   const { firstSeen, earliest: indexEarliest } = updateFirstSeen(dataDir, date, entities);
-  log.info("rank", `${scored.length} merged entities`);
+  log.info("rank", `${scored.length} merged entities (${excluded.length} excluded by judgement)`);
   const ranked = (rows: Row[]): Row[] => rows.slice(0, TOP).map((r, i) => ({ rank: i + 1, ...r }));
 
   const tables: RawTable[] = [];
@@ -288,7 +304,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // 1. top-installs
   add(
     "top-installs",
-    [...IDENT_COLS, "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "pop_score", "coverage"],
+    [...IDENT_COLS, "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "pop_score", "coverage", ...TAIL_COLS],
     scored
       .filter((s) => s.popScore !== undefined)
       .sort((a, b) => (b.popScore ?? 0) - (a.popScore ?? 0))
@@ -305,7 +321,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // 2. trending-7d — source honestly labeled; own-snapshot growth replaces this after 7 days of history
   add(
     "trending-7d",
-    [...IDENT_COLS, "installs_skillssh", "trending_rank_skillssh", "weekly_recent", "weekly_prev", "growth_pct", "data_source"],
+    [...IDENT_COLS, "installs_skillssh", "trending_rank_skillssh", "weekly_recent", "weekly_prev", "growth_pct", "data_source", ...TAIL_COLS],
     scored
       .filter((s) => s.ssTrendingRank !== undefined)
       .sort((a, b) => (a.ssTrendingRank ?? 1e9) - (b.ssTrendingRank ?? 1e9))
@@ -339,7 +355,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // Raw HN/Bsky totals ride along so readers can see the pre-filter magnitudes.
   add(
     "social-buzz",
-    [...IDENT_COLS, "x_mentions_7d", "x_truncated", "hn_hits_7d", "hn_raw_7d", "bsky_hits_7d", "bsky_raw_7d", "gh_mentions_7d", "x_engagement_7d", "buzz_score", "buzz_shared"],
+    [...IDENT_COLS, "x_mentions_7d", "x_truncated", "hn_hits_7d", "hn_raw_7d", "bsky_hits_7d", "bsky_raw_7d", "gh_mentions_7d", "x_engagement_7d", "buzz_score", "buzz_shared", ...TAIL_COLS],
     scored
       .filter((s) => {
         if (s.buzzScore === undefined || isGenericName(s.name)) return false;
@@ -366,7 +382,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // 4. most-active — freshness within the ClawHub ecosystem (only source with update timestamps)
   add(
     "most-active",
-    [...IDENT_COLS, "last_update", "versions_clawhub", "installs_or_downloads", "freshness_score", "data_scope"],
+    [...IDENT_COLS, "last_update", "versions_clawhub", "installs_or_downloads", "freshness_score", "data_scope", ...TAIL_COLS],
     scored
       .filter((s) => s.freshScore !== undefined && s.chUpdatedAt !== undefined && (s.popScore ?? 0) > 0.5)
       .sort((a, b) => (b.freshScore ?? 0) - (a.freshScore ?? 0))
@@ -383,7 +399,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // 5. official-100
   add(
     "official-100",
-    [...IDENT_COLS, "verified_by", "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "pop_score"],
+    [...IDENT_COLS, "verified_by", "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "pop_score", ...TAIL_COLS],
     scored
       .filter((s) => s.isOfficialAny && s.popScore !== undefined)
       .sort((a, b) => (b.popScore ?? 0) - (a.popScore ?? 0))
@@ -517,7 +533,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // 8. rising-stars — registry created_at or our own first-seen index
   add(
     "rising-stars",
-    [...IDENT_COLS, "first_seen_days", "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "pop_score"],
+    [...IDENT_COLS, "first_seen_days", "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "pop_score", ...TAIL_COLS],
     scored
       .map((s) => ({ s, age: effectiveAge(s) }))
       .filter(({ s, age }) => age !== undefined && age < RISING_DAYS && s.popScore !== undefined)
@@ -537,7 +553,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   // must hold on the flagship list too (audit M7).
   add(
     "best-100",
-    [...IDENT_COLS, "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "wis", "popularity", "momentum", "buzz", "maintenance", "trust", "coverage", "anomaly"],
+    [...IDENT_COLS, "installs_skillssh", "downloads_clawhub", "downloads_skillhub_cn", "wis", "popularity", "momentum", "buzz", "maintenance", "trust", "coverage", "anomaly", ...TAIL_COLS],
     scored
       .filter((s) => {
         const age = effectiveAge(s);

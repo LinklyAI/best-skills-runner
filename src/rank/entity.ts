@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readCsv } from "../lib/csv.js";
+import { flagsOf, scoresOf } from "../judge/quality.js";
 
 /**
  * One skill entity. The primary key is FULLY QUALIFIED per ecosystem — short names
@@ -57,6 +58,10 @@ export interface Entity {
   buzzShared?: boolean;
   description?: string;
   descriptionZh?: string;
+  /** From raw/judgments.csv (jev); undefined when not judged or not confident. */
+  category?: string;
+  /** Judgement flags derived from the probabilities; see judge/quality.ts for which ones exclude. */
+  flags?: string[];
 }
 
 function num(s: string | undefined): number | undefined {
@@ -186,6 +191,16 @@ export function buildEntities(rawDir: string): Map<string, Entity> {
     e.xEngagement = num(r["x_engagement_7d"]);
     e.buzzMeasured = [e.hn, e.bsky, e.ghMentions, e.xMentions].some((v) => v !== undefined);
     e.buzzShared = group.length > 1;
+  }
+
+  // Judgements — category and flags. Flags are re-derived from the probabilities,
+  // so the thresholds in judge/quality.ts are the single source of truth.
+  for (const r of readIf(rawDir, "judgments")) {
+    const e = entities.get(r["skill_key"] ?? "");
+    if (!e) continue;
+    e.category = r["category"] || undefined;
+    const flags = flagsOf(scoresOf(r));
+    if (flags.length > 0) e.flags = flags;
   }
 
   return entities;

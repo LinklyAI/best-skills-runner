@@ -68,7 +68,19 @@ pnpm daily      # full run, validate, and push
 
 `main.ts` also takes `--date=YYYY-MM-DD`, `--only=<collectors>`, `--rank-only`, `--no-push` and `--allow-drift=<raw files>` (accept a confirmed upstream row-count change for one run, e.g. `--allow-drift=clawhub-official`). Dates are always UTC.
 
-Only `GITHUB_TOKEN` is effectively required (repository stars and GitHub mention counts). Without `RAPIDAPI_KEY` the pipeline skips X; without `LLM_API_BASE`/`LLM_API_KEY` it falls back to raw HN/Bluesky hit counts instead of LLM-filtered ones. Neither is fatal — degraded columns are labeled as such in the output.
+Only `GITHUB_TOKEN` is effectively required (repository stars and GitHub mention counts). Without `RAPIDAPI_KEY` the pipeline skips X; without `LLM_API_BASE`/`LLM_API_KEY` it skips every jev judgement (see below) and falls back to raw mention counts and the latest earlier skill judgements. Neither is fatal — degraded columns are labeled as such in the output.
+
+### Judgements: jev
+
+Every judgement call in the pipeline is made by [jev](https://openrouter.ai/typesafe/jev-1.13), TypeSafe's decision model, through OpenRouter's System One endpoint (`POST {LLM_API_BASE}/systemone`). jev does not generate text: it answers typed questions about a piece of data with calibrated probabilities, so every threshold below acts on a probability rather than on a model's free-form reply. The model is pinned to `typesafe/jev-1.13` (the thresholds are tuned against it) and every skill judgement in `raw/judgments.csv` records the dated model that served it.
+
+| Judgement      | Question                                                                                                    | Used for                                                                                                            |
+| -------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Post relevance | Is this HN / Bluesky / X post about this skill?                                                             | Only posts with P ≥ 0.5 count as mentions; HN / Bluesky scale the relevant share of the sample to the total hits    |
+| Skill quality  | Is it a real skill? Is it marked deprecated? Does it pressure agents into using it? Is its purpose harmful? | `not-a-skill`, `deprecated` and `harmful` keep an entity out of every ranking; `coercive` is published as a warning |
+| Category       | Which of SkillHub's 12 categories (or `other`) fits?                                                        | The `category` column of every skill ranking                                                                        |
+
+Skill judgements are written to `raw/judgments.csv` and carried forward while a skill's listing is unchanged, so each skill is judged once, not daily. Thresholds live in `src/judge/quality.ts`.
 
 ## Layout
 
@@ -78,6 +90,7 @@ src/
 ├── probe.ts       per-source connectivity smoke test
 ├── sources/       collectors: skills-sh · clawhub · skillhub · github
 ├── buzz/          mention volume across HN · Bluesky · GitHub search · X
+├── judge/         jev client · skill quality and category judgements
 ├── rank/          entity resolution · percentile scoring · the nine rankings
 ├── publish/       CSV output, README rendering (per language), git commit + push
 ├── validate.ts    publication gate

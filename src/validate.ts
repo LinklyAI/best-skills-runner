@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { readCsv } from "./lib/csv.js";
 import { log } from "./lib/log.js";
+import { flagsOf, isExcluded, scoresOf } from "./judge/quality.js";
 
 /** Minimum row counts per raw file. Tripping these means a source silently degraded. */
 const RAW_MIN_ROWS: Record<string, number> = {
@@ -40,6 +41,13 @@ const RANKING_SORT_COL: Record<string, string | null> = {
   "top-repos": "stars",
   "rising-stars": "pop_score",
 };
+
+/**
+ * Most entities the judge excludes from rankings are placeholders and deprecated listings —
+ * a fraction of a percent. A share above this means a model or prompt regression, and
+ * publishing would silently gut the rankings.
+ */
+const MAX_EXCLUDED_SHARE = 0.05;
 
 /** Allowed day-over-day row count drift for raw files whose size is not fixed by construction. */
 const DRIFT_CHECKED = new Set(["github-repos", "clawhub-official", "buzz"]);
@@ -82,7 +90,9 @@ export function validate(dataDir: string, date: string, opts: ValidateOptions = 
     }
   };
   expectDir("rankings", new Set(Object.keys(RANKING_MIN_ROWS)));
-  expectDir("raw", new Set([...Object.keys(RAW_MIN_ROWS), "x-posts"]));
+  // judgments is optional: without an LLM key the judge step still writes carried-forward rows,
+  // but a --rank-only run over old data has none.
+  expectDir("raw", new Set([...Object.keys(RAW_MIN_ROWS), "x-posts", "judgments"]));
 
   // --- raw files ---
   for (const [name, minRows] of Object.entries(RAW_MIN_ROWS)) {
@@ -136,6 +146,18 @@ export function validate(dataDir: string, date: string, opts: ValidateOptions = 
     );
     if (rows.length > 0 && measured.length / rows.length < 0.5) {
       errors.push(`buzz.csv: only ${measured.length}/${rows.length} rows have any platform measurement — collection likely failed`);
+    }
+  }
+
+  const judgmentsPath = join(dayDir, "raw", "judgments.csv");
+  if (existsSync(judgmentsPath)) {
+    const rows = readCsv(judgmentsPath);
+    // Same derivation as the ranking step, so the gate measures exactly what rankings drop.
+    const excluded = rows.filter((r) => isExcluded(flagsOf(scoresOf(r))));
+    if (rows.length > 0 && excluded.length / rows.length > MAX_EXCLUDED_SHARE) {
+      errors.push(
+        `judgments.csv: ${excluded.length}/${rows.length} entities excluded from rankings (> ${MAX_EXCLUDED_SHARE * 100}%) — judge regression?`,
+      );
     }
   }
 

@@ -5,6 +5,8 @@ import { skillhub } from "./sources/skillhub.js";
 import { githubSource } from "./sources/github.js";
 import { buildTargets, buildTargetsFromRaw } from "./buzz/keywords.js";
 import { collectBuzz } from "./buzz/collect-buzz.js";
+import { jevClient, type JevClient } from "./judge/jev.js";
+import { judgeEntities } from "./judge/entities.js";
 import { computeRankings } from "./rank/rankings.js";
 import { writeRaw, writeRankings, refreshLatest, commitAndPush, dataRepoPath } from "./publish/publish.js";
 import { renderReadme } from "./publish/readme.js";
@@ -15,7 +17,7 @@ import type { RawTable } from "./sources/types.js";
 const noPush = process.argv.includes("--no-push");
 /** Recompute rankings + README from already-collected raw data (no network). */
 const rankOnly = process.argv.includes("--rank-only");
-/** --only=skills-sh,clawhub,skillhub,github,buzz — run a subset of collectors for debugging. */
+/** --only=skills-sh,clawhub,skillhub,github,buzz,judge — run a subset of steps for debugging. */
 const onlyArg = process.argv.find((a) => a.startsWith("--only="));
 const only = onlyArg ? new Set(onlyArg.slice("--only=".length).split(",")) : null;
 const want = (id: string): boolean => only === null || only.has(id);
@@ -34,7 +36,7 @@ if (dateArg && !/^\d{4}-\d{2}-\d{2}$/.test(dateArg)) {
 }
 const date = dateArg ?? new Date().toISOString().slice(0, 10); // UTC
 
-async function collectAll(rawDir: string): Promise<{ tables: RawTable[]; failures: string[] }> {
+async function collectAll(rawDir: string, jev: JevClient | null): Promise<{ tables: RawTable[]; failures: string[] }> {
   const tables: RawTable[] = [];
   const failures: string[] = [];
 
@@ -72,7 +74,7 @@ async function collectAll(rawDir: string): Promise<{ tables: RawTable[]; failure
         ? buildTargets(tables, BUZZ_TOP_N)
         : buildTargetsFromRaw(rawDir, BUZZ_TOP_N); // --only=buzz: reuse today's written raw
       log.info("buzz", `collecting for ${targets.length} skills`);
-      tables.push(...(await collectBuzz(targets)));
+      tables.push(...(await collectBuzz(targets, jev)));
     } catch (err) {
       failures.push(`buzz: ${String(err)}`);
       log.error("buzz", String(err));
@@ -89,13 +91,26 @@ async function main(): Promise<void> {
   let failures: string[] = [];
 
   if (!rankOnly) {
-    const collected = await collectAll(join(dataDir, date, "raw"));
+    const jev = jevClient();
+    if (!jev) log.warn("main", "LLM_API_BASE / LLM_API_KEY not set — jev judgements unavailable");
+    const collected = await collectAll(join(dataDir, date, "raw"), jev);
     failures = collected.failures;
     if (collected.tables.length === 0) {
       log.error("main", "all collectors failed — nothing to write, keeping yesterday's data");
       process.exit(1);
     }
     writeRaw(date, collected.tables);
+
+    // Judge entities from the raw data just written; rankings read the verdicts back from
+    // raw/judgments.csv, so --rank-only stays offline and reproducible.
+    if (want("judge")) {
+      try {
+        writeRaw(date, [await judgeEntities(dataDir, date, jev)]);
+      } catch (err) {
+        failures.push(`judge: ${String(err)}`);
+        log.error("judge", String(err));
+      }
+    }
   }
 
   const rankings = computeRankings(dataDir, date);
