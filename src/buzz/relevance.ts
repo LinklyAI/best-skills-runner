@@ -1,8 +1,5 @@
 import { log } from "../lib/log.js";
-import { noulOf, type JevClient, type NoulQuestion } from "../judge/jev.js";
-
-/** Posts per jev request. One request carries every item plus one question per item. */
-const BATCH = 50;
+import { JEV_CONCURRENCY, mapLimit, noulOf, type JevClient, type NoulQuestion } from "../judge/jev.js";
 
 /**
  * A post counts as a mention when P(relevant) reaches this. Summing raw probabilities
@@ -16,6 +13,13 @@ export interface Candidate {
   id: string;
   text: string;
 }
+
+/**
+ * Posts per jev request — every post of one search fits in a single request (HN 30,
+ * Bluesky 25, X up to 100). jev is built for this: one `state`, many questions answered
+ * together, the state billed once.
+ */
+const BATCH = 100;
 
 const CRITERIA: NoulQuestion["criteria"] = {
   true:
@@ -38,46 +42,70 @@ function question(itemKey: string): NoulQuestion {
   };
 }
 
+/** The posts one platform search returned for one skill. */
+export interface RelevanceJob {
+  skill: string;
+  desc?: string;
+  candidates: Candidate[];
+}
+
+/** One jev request: every post of the batch in `items`, one question per post. */
+async function judgeBatch(jev: JevClient, job: RelevanceJob, batch: Candidate[], out: Map<string, number>): Promise<void> {
+  const items: Record<string, string> = {};
+  const questions: Record<string, NoulQuestion> = {};
+  // Positional keys keep ids like HN objectIDs or Bluesky indexes out of the prompt.
+  batch.forEach((c, i) => {
+    items[`i${i}`] = c.text;
+    questions[`i${i}`] = question(`i${i}`);
+  });
+  const res = await jev.ask({ skill: job.skill, description: job.desc?.slice(0, 300), items }, questions);
+  batch.forEach((c, i) => {
+    const p = noulOf(res.answers[`i${i}`]);
+    if (p !== undefined) out.set(c.id, p);
+  });
+}
+
 /**
- * Relevance probability per candidate, from jev.
+ * Relevance probability per post, from jev. Each search is one request that asks about
+ * all of its posts at once; searches are only collected while the platforms are paced,
+ * then judged together here.
  *
- * Returns null when jev is unavailable or every batch failed, so callers can fall back
- * to raw counts EXPLICITLY instead of silently zeroing (audit B10). Candidates missing
- * from a partially failed run are left out of the map; callers scale over what was scored.
+ * Returns one verdict per job, in order. A verdict is null when jev is unavailable or
+ * every request of that job failed, so callers can fall back to raw counts EXPLICITLY
+ * instead of silently zeroing (audit B10). Posts of a failed batch are left out of the
+ * map; callers scale over what was scored.
  */
 export async function scoreRelevance(
   jev: JevClient | null,
-  skillName: string,
-  skillDesc: string | undefined,
-  candidates: Candidate[],
-): Promise<Map<string, number> | null> {
-  if (!jev) return null;
-  if (candidates.length === 0) return new Map();
+  jobs: RelevanceJob[],
+): Promise<Array<Map<string, number> | null>> {
+  if (!jev) return jobs.map(() => null);
 
-  const out = new Map<string, number>();
-  let anySuccess = false;
-  for (let i = 0; i < candidates.length; i += BATCH) {
-    const batch = candidates.slice(i, i + BATCH);
-    // Positional keys keep ids like HN objectIDs or Bluesky indexes out of the prompt.
-    const items: Record<string, string> = {};
-    const questions: Record<string, NoulQuestion> = {};
-    batch.forEach((c, j) => {
-      const key = `i${j}`;
-      items[key] = c.text;
-      questions[key] = question(key);
-    });
+  const tasks = jobs.flatMap((job, j) => {
+    const batches: Array<{ job: RelevanceJob; j: number; batch: Candidate[] }> = [];
+    for (let i = 0; i < job.candidates.length; i += BATCH) batches.push({ job, j, batch: job.candidates.slice(i, i + BATCH) });
+    return batches;
+  });
+  const verdicts = jobs.map(() => new Map<string, number>());
+  let failed = 0;
+  const started = Date.now();
+  await mapLimit(tasks, JEV_CONCURRENCY, async ({ job, j, batch }) => {
     try {
-      const res = await jev.ask({ skill: skillName, description: skillDesc?.slice(0, 300), items }, questions);
-      batch.forEach((c, j) => {
-        const p = noulOf(res.answers[`i${j}`]);
-        if (p !== undefined) out.set(c.id, p);
-      });
-      anySuccess = true;
+      await judgeBatch(jev, job, batch, verdicts[j]!);
     } catch (err) {
-      log.warn("relevance", `${skillName} batch ${i / BATCH}: ${String(err)}`);
+      failed++;
+      if (failed <= 5) log.warn("relevance", `${job.skill}: ${String(err)}`);
     }
-  }
-  return anySuccess ? out : null;
+  });
+  const posts = jobs.reduce((n, job) => n + job.candidates.length, 0);
+  log.info(
+    "relevance",
+    `${posts} posts of ${jobs.length} searches judged in ${tasks.length} requests, ` +
+      `${((Date.now() - started) / 1000).toFixed(0)}s` +
+      (failed > 0 ? ` (${failed} failed)` : ""),
+  );
+  // A job with posts but no successful answer has no verdict; a job with no posts has an empty one.
+  return jobs.map((job, j) => (job.candidates.length > 0 && verdicts[j]?.size === 0 ? null : (verdicts[j] ?? null)));
 }
 
 /**

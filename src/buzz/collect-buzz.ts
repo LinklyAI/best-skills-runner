@@ -6,7 +6,7 @@ import { log } from "../lib/log.js";
 import type { RawTable } from "../sources/types.js";
 import type { JevClient } from "../judge/jev.js";
 import type { BuzzTarget } from "./keywords.js";
-import { estimateCount, RELEVANT_FROM, scoreRelevance, type Candidate } from "./relevance.js";
+import { estimateCount, RELEVANT_FROM, scoreRelevance, type Candidate, type RelevanceJob } from "./relevance.js";
 
 const WINDOW_DAYS = 7;
 /** X requests are the only metered resource — keep its target list shorter. */
@@ -167,6 +167,10 @@ export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null):
     });
   }
 
+  // Searches are paced by each platform's rate limit, so their posts are only collected
+  // here; jev then judges every post of every search at once, concurrently, at the end.
+  const pending: Array<{ job: RelevanceJob; apply: (verdict: Map<string, number> | null) => void }> = [];
+
   /** Run one platform over all targets with a circuit breaker: 5 consecutive failures → skip the rest. */
   const runPlatform = async (platform: string, paceMs: number, fn: (t: BuzzTarget) => Promise<void>): Promise<void> => {
     let consecutiveFails = 0;
@@ -189,7 +193,7 @@ export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null):
     log.info("buzz", `${platform} done (${done}/${targets.length})`);
   };
 
-  // HN — pull candidate texts, then jev-score relevance; fall back to raw count explicitly
+  // HN — pull candidate texts for the relevance filter; fall back to raw count explicitly
   await runPlatform("hn", 500, async (t) => {
     const { nbHits, hits } = await hnSearch(t.phrase, sinceEpoch);
     const row = rows.get(t.key)!;
@@ -201,15 +205,19 @@ export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null):
     const candidates = hits
       .map((h): Candidate => ({ id: h.objectID ?? "", text: hnText(h) }))
       .filter((c) => c.id && c.text);
-    const verdict = await scoreRelevance(jev, t.key, t.desc, candidates);
-    if (verdict === null) {
-      row.hn_hits_7d = nbHits; // explicit fallback to raw
-    } else {
-      // Scale the relevant share up to the full hit count when the page sampled a subset
-      row.hn_hits_7d = estimateCount(verdict, candidates, nbHits);
-      row.llm_filtered = true;
-      row.judge_model = jev?.model;
-    }
+    pending.push({
+      job: { skill: t.key, desc: t.desc, candidates },
+      apply: (verdict) => {
+        if (verdict === null) {
+          row.hn_hits_7d = nbHits; // explicit fallback to raw
+        } else {
+          // Scale the relevant share up to the full hit count when the page sampled a subset
+          row.hn_hits_7d = estimateCount(verdict, candidates, nbHits);
+          row.llm_filtered = true;
+          row.judge_model = jev?.model;
+        }
+      },
+    });
   });
 
   // Bluesky — same pattern
@@ -224,14 +232,18 @@ export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null):
     const candidates = posts
       .map((p, i): Candidate => ({ id: String(i), text: (p.record?.text ?? "").slice(0, 300) }))
       .filter((c) => c.text);
-    const verdict = await scoreRelevance(jev, t.key, t.desc, candidates);
-    if (verdict === null) {
-      row.bsky_hits_7d = hitsTotal;
-    } else {
-      row.bsky_hits_7d = estimateCount(verdict, candidates, hitsTotal);
-      row.llm_filtered = true;
-      row.judge_model = jev?.model;
-    }
+    pending.push({
+      job: { skill: t.key, desc: t.desc, candidates },
+      apply: (verdict) => {
+        if (verdict === null) {
+          row.bsky_hits_7d = hitsTotal;
+        } else {
+          row.bsky_hits_7d = estimateCount(verdict, candidates, hitsTotal);
+          row.llm_filtered = true;
+          row.judge_model = jev?.model;
+        }
+      },
+    });
   });
 
   // GitHub search — 30 req/min hard limit; 2.5s leaves headroom for retries (audit B11)
@@ -287,38 +299,44 @@ export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null):
           cursor = next;
           await sleep(1200);
         }
+        const row = rows.get(t.key)!;
+        row.x_raw_7d = inWindow.length;
+        row.x_pages = pages;
+        row.x_truncated = !windowExhausted; // hit the page cap before leaving the window
         // X was the one unfiltered channel: its context-word query still matches everyday
         // uses of the name, and one post matching several names counted for each of them.
         const candidates = inWindow.map(({ text }, i): Candidate => ({ id: String(i), text })).filter((c) => c.text);
+        const applyX = (verdict: Map<string, number> | null): void => {
+          // Without a verdict every post counts, as before the filter existed.
+          const counts = (i: number): boolean => verdict === null || (verdict.get(String(i)) ?? 0) >= RELEVANT_FROM;
+          inWindow.forEach(({ post }, i) => {
+            const p = verdict?.get(String(i));
+            if (p !== undefined) post.relevance = Math.round(p * 100) / 100;
+            if (post.tweet_url) posts.push(post);
+          });
+          row.x_mentions_7d = inWindow.filter((_, i) => counts(i)).length;
+          row.x_filtered = verdict !== null;
+          if (verdict !== null) row.judge_model = jev?.model;
+          row.x_engagement_7d = inWindow.reduce(
+            (sum, { post }, i) => sum + (counts(i) ? post.favorites + post.retweets : 0),
+            0,
+          );
+        };
         // Nothing to check → no verdict, so x_filtered stays false like HN/Bluesky with zero hits.
-        const verdict = candidates.length > 0 ? await scoreRelevance(jev, t.key, t.desc, candidates) : null;
-        // Without a verdict every post counts, as before the filter existed.
-        const counts = (i: number): boolean => verdict === null || (verdict.get(String(i)) ?? 0) >= RELEVANT_FROM;
-        inWindow.forEach(({ post }, i) => {
-          const p = verdict?.get(String(i));
-          if (p !== undefined) post.relevance = Math.round(p * 100) / 100;
-          if (post.tweet_url) posts.push(post);
-        });
-        const row = rows.get(t.key)!;
-        row.x_raw_7d = inWindow.length;
-        row.x_mentions_7d = inWindow.filter((_, i) => counts(i)).length;
-        row.x_filtered = verdict !== null;
-        if (verdict !== null) row.judge_model = jev?.model;
-        row.x_pages = pages;
-        row.x_truncated = !windowExhausted; // hit the page cap before leaving the window
-        row.x_engagement_7d = inWindow.reduce(
-          (sum, { post }, i) => sum + (counts(i) ? post.favorites + post.retweets : 0),
-          0,
-        );
+        if (candidates.length > 0) pending.push({ job: { skill: t.key, desc: t.desc, candidates }, apply: applyX });
+        else applyX(null);
       } catch (err) {
         log.warn("buzz-x", `${t.key}: ${String(err)}`);
       }
       await sleep(1500);
     }
-    log.info("buzz", `X done (${xTargets.length} skills, ${requests} requests, ${posts.length} posts)`);
+    log.info("buzz", `X done (${xTargets.length} skills, ${requests} requests)`);
   } else {
     log.warn("buzz", "RAPIDAPI_KEY not set — skipping X");
   }
+
+  const verdicts = await scoreRelevance(jev, pending.map((p) => p.job));
+  pending.forEach((p, i) => p.apply(verdicts[i] ?? null));
 
   return [
     {

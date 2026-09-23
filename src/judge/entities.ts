@@ -5,7 +5,7 @@ import { readCsv, type CsvValue } from "../lib/csv.js";
 import { log } from "../lib/log.js";
 import { buildEntities, type Entity } from "../rank/entity.js";
 import type { RawTable } from "../sources/types.js";
-import { mapLimit, noulOf, type ChoiceQuestion, type JevClient, type JevQuestion, type NoulQuestion } from "./jev.js";
+import { JEV_CONCURRENCY, mapLimit, noulOf, type ChoiceQuestion, type JevClient, type JevQuestion, type NoulQuestion } from "./jev.js";
 import { CATEGORIES, CATEGORY_MIN_P, flagsOf, scoresOf } from "./quality.js";
 
 /**
@@ -22,7 +22,6 @@ import { CATEGORIES, CATEGORY_MIN_P, flagsOf, scoresOf } from "./quality.js";
 
 /** Bump when any question below changes — every entity is then judged again. */
 const QUESTIONS_VERSION = 1;
-const CONCURRENCY = 4;
 /** How far back to look for a judgments.csv to carry forward. */
 const CARRY_LOOKBACK_DAYS = 30;
 
@@ -215,7 +214,7 @@ export async function judgeEntities(dataDir: string, date: string, jev: JevClien
   } else if (pending.length > 0) {
     log.info("judge", `judging ${pending.length} new or changed entities (${rows.length} carried forward)`);
     let failed = 0;
-    const judged = await mapLimit(pending, CONCURRENCY, async ({ e, listing, hash }) => {
+    const judged = await mapLimit(pending, JEV_CONCURRENCY, async ({ e, listing, hash }) => {
       try {
         return await judgeOne(jev, e, listing, hash, date);
       } catch (err) {

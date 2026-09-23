@@ -65,6 +65,17 @@ export interface JevClient {
 
 const RETRIES = 4;
 
+/**
+ * An unpaired UTF-16 surrogate — what is left when a post is cut in the middle of an emoji.
+ * jev rejects the whole request over one ("Request contains invalid Unicode text").
+ */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** JSON.stringify replacer that drops lone surrogates from every string in the request. */
+function wellFormed(_key: string, value: unknown): unknown {
+  return typeof value === "string" ? value.replace(LONE_SURROGATE, "") : value;
+}
+
 /** A request the endpoint rejected on its merits (bad body, bad key) — retrying cannot help. */
 class FatalJevError extends Error {}
 
@@ -88,7 +99,7 @@ export function jevClient(): JevClient | null {
         const res = await fetch(url, {
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", ...APP_HEADERS },
-          body: JSON.stringify({ model, state, questions }),
+          body: JSON.stringify({ model, state, questions }, wellFormed),
           signal: AbortSignal.timeout(60_000),
         });
         if (res.ok) {
@@ -122,10 +133,13 @@ export function noulOf(answer: JevAnswer | undefined): number | undefined {
 }
 
 /**
- * Run `fn` over `items` with at most `limit` in flight. The endpoint's rate limit is
- * shared per key and starts refusing around 8 concurrent requests, so callers stay
- * well below that.
+ * Requests in flight at once. Each request already carries many questions (the way jev
+ * is meant to be used); a few in parallel keeps the run short. The rate limit is shared
+ * per key and TypeSafe's own examples start hitting it around 8 workers (429s retry).
  */
+export const JEV_CONCURRENCY = 4;
+
+/** Run `fn` over `items` with at most `limit` in flight. */
 export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
