@@ -64,6 +64,7 @@ pnpm probe      # connectivity check against every source
 pnpm collect    # full run, no push
 pnpm rank       # recompute rankings from today's already-collected raw data
 pnpm daily      # full run, validate, and push
+pnpm test       # unit tests (no network)
 ```
 
 `main.ts` also takes `--date=YYYY-MM-DD`, `--only=<collectors>`, `--rank-only`, `--no-push` and `--allow-drift=<raw files>` (accept a confirmed upstream row-count change for one run, e.g. `--allow-drift=clawhub-official`). A count that returns to within 5% of a size published in the last 14 days is accepted without the flag, as a warning. Dates are always UTC.
@@ -93,8 +94,9 @@ src/
 ├── judge/         jev client · skill quality and category judgements
 ├── rank/          entity resolution · percentile scoring · the nine rankings
 ├── publish/       CSV output, README rendering (per language), git commit + push
-├── validate.ts    publication gate
+├── validate.ts    publication gate (raw files are pre-checked before the metered buzz and judge stages)
 └── lib/           csv · env · http · github-auth · log
+test/              unit tests (node:test via tsx)
 trigger/           Cloudflare Worker that dispatches the daily workflow on time
 ```
 
