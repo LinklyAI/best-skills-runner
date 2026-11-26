@@ -3,6 +3,7 @@ import { clawhub } from "./sources/clawhub.js";
 import { skillhub } from "./sources/skillhub.js";
 import { githubSource } from "./sources/github.js";
 import { fetchJson } from "./lib/http.js";
+import { checkXSearch, type XSearchResponse } from "./buzz/collect-buzz.js";
 import { bskyLogin } from "./lib/bsky-auth.js";
 import { env } from "./lib/env.js";
 import { log } from "./lib/log.js";
@@ -50,7 +51,7 @@ const targets: ProbeTarget[] = [
     async probe(): Promise<string> {
       const key = env("RAPIDAPI_KEY");
       if (!key) throw new Error("RAPIDAPI_KEY not set");
-      const d = await fetchJson<{ status?: string; timeline?: unknown[] }>(
+      const d = await fetchJson<XSearchResponse>(
         "https://twitter-api45.p.rapidapi.com/search.php?query=claude%20skills&search_type=Latest",
         {
           ...PROBE_OPTS,
@@ -58,7 +59,9 @@ const targets: ProbeTarget[] = [
           headers: { "x-rapidapi-host": "twitter-api45.p.rapidapi.com", "x-rapidapi-key": key },
         },
       );
-      return `status=${d.status} items=${d.timeline?.length}`;
+      // Same check as the collector: a "failed" body behind HTTP 200 is an outage.
+      const timeline = checkXSearch(d);
+      return `status=${d.status} items=${timeline.length}`;
     },
   },
 ];

@@ -10,8 +10,10 @@ import { estimateCount, RELEVANT_FROM, scoreRelevance, type Candidate, type Rele
 
 const WINDOW_DAYS = 7;
 /** X requests are the only metered resource — keep its target list shorter. */
-const X_TOP_N = 50;
+export const X_TOP_N = 50;
 const X_MAX_PAGES = 5;
+/** Extra attempts when the provider answers HTTP 200 with a "failed" body. */
+const X_FAILED_BODY_RETRIES = 2;
 
 interface XPost {
   skill_key: string;
@@ -133,16 +135,55 @@ interface XTweet {
   text?: string;
 }
 
-async function xSearchPage(query: string, key: string, cursor?: string): Promise<{ timeline: XTweet[]; next?: string }> {
+async function xSearchPage(
+  query: string,
+  key: string,
+  cursor: string | undefined,
+  onRequest: () => void,
+): Promise<{ timeline: XTweet[]; next?: string }> {
   const url =
     `https://twitter-api45.p.rapidapi.com/search.php?query=${encodeURIComponent(query)}&search_type=Latest` +
     (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
-  const d = await fetchJson<{ timeline?: XTweet[]; next_cursor?: string }>(url, {
-    headers: { "x-rapidapi-host": "twitter-api45.p.rapidapi.com", "x-rapidapi-key": key },
-    timeoutMs: 60_000,
-    retries: 2,
-  });
-  return { timeline: d.timeline ?? [], next: d.next_cursor };
+  // A "failed" body comes back with HTTP 200, so fetchJson's retries never see it.
+  // These failures are intermittent per request (on 2026-11-25 some queries came back
+  // failed while others filled every page), so a short retry usually recovers them.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= X_FAILED_BODY_RETRIES; attempt++) {
+    if (attempt > 0) await sleep(3_000 * attempt);
+    const d = await fetchJson<XSearchResponse>(url, {
+      headers: { "x-rapidapi-host": "twitter-api45.p.rapidapi.com", "x-rapidapi-key": key },
+      timeoutMs: 60_000,
+      retries: 2,
+      onRequest,
+    });
+    try {
+      return { timeline: checkXSearch(d), next: d.next_cursor ?? undefined };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
+export interface XSearchResponse {
+  status?: string;
+  error?: string;
+  timeline?: XTweet[];
+  next_cursor?: string | null;
+}
+
+/**
+ * The provider also reports outages inside an HTTP 200 body
+ * (`{"status":"failed","timeline":[],"error":"..."}`). Read as data, that is an
+ * empty timeline, i.e. a genuine "0 posts this week" — so reject it here and
+ * let the target fall through to the degraded (blank) path instead.
+ */
+export function checkXSearch(d: XSearchResponse): XTweet[] {
+  if ((d.status !== undefined && d.status !== "ok") || d.error) {
+    throw new Error(`X search failed: status=${d.status ?? "?"} error=${d.error ?? "-"}`);
+  }
+  if (!Array.isArray(d.timeline)) throw new Error("X search returned no timeline array");
+  return d.timeline;
 }
 
 export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null): Promise<RawTable[]> {
@@ -264,8 +305,17 @@ export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null):
         // In-window posts of this target, with their text kept in memory for the relevance filter
         const inWindow: Array<{ post: XPost; text: string }> = [];
         while (pages < X_MAX_PAGES) {
-          const { timeline, next } = await xSearchPage(t.xQuery, rapidKey, cursor);
-          requests++;
+          let page: { timeline: XTweet[]; next?: string };
+          try {
+            // Counts every request sent, retries and failures included: each one is metered.
+            page = await xSearchPage(t.xQuery, rapidKey, cursor, () => requests++);
+          } catch (err) {
+            if (pages === 0) throw err; // nothing measured: leave the X columns blank
+            // Keep the pages already read; the count is a floor, so mark it truncated.
+            log.warn("buzz-x", `${t.key}: page ${pages + 1} failed, keeping ${pages} page(s): ${String(err)}`);
+            break;
+          }
+          const { timeline, next } = page;
           pages++;
           if (timeline.length === 0) {
             windowExhausted = true;
@@ -302,7 +352,7 @@ export async function collectBuzz(targets: BuzzTarget[], jev: JevClient | null):
         const row = rows.get(t.key)!;
         row.x_raw_7d = inWindow.length;
         row.x_pages = pages;
-        row.x_truncated = !windowExhausted; // hit the page cap before leaving the window
+        row.x_truncated = !windowExhausted; // hit the page cap, or a later page failed, before leaving the window
         // X was the one unfiltered channel: its context-word query still matches everyday
         // uses of the name, and one post matching several names counted for each of them.
         const candidates = inWindow.map(({ text }, i): Candidate => ({ id: String(i), text })).filter((c) => c.text);
