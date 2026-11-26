@@ -109,29 +109,21 @@ function isNonNegNumber(s: string): boolean {
   return Number.isFinite(n) && n >= 0;
 }
 
-export function validate(dataDir: string, date: string, opts: ValidateOptions = {}): ValidationResult {
-  const errors: string[] = [];
-  const warnings: string[] = [];
+/**
+ * Presence, row floors, numeric sanity and day-over-day drift of the given raw files.
+ * Shared by the full gate and by the pre-check that runs before the metered stages.
+ */
+function checkRawFiles(
+  dataDir: string,
+  date: string,
+  names: readonly string[],
+  opts: ValidateOptions,
+  errors: string[],
+  warnings: string[],
+): void {
   const dayDir = join(dataDir, date);
-
-  // --- directory closure: no unexpected files may ship (audit M1 — a withdrawn
-  // ranking survived every per-file check because nothing enumerated the directory) ---
-  const expectDir = (subdir: string, expected: Set<string>): void => {
-    const dir = join(dayDir, subdir);
-    if (!existsSync(dir)) return; // missing files are reported per-file below
-    for (const f of readdirSync(dir)) {
-      if (f.endsWith(".csv") && !expected.has(f.replace(/\.csv$/, ""))) {
-        errors.push(`${subdir}/${f} is not a known output — stale file from an older pipeline?`);
-      }
-    }
-  };
-  expectDir("rankings", new Set(Object.keys(RANKING_MIN_ROWS)));
-  // judgments is optional: without an LLM key the judge step still writes carried-forward rows,
-  // but a --rank-only run over old data has none.
-  expectDir("raw", new Set([...Object.keys(RAW_MIN_ROWS), "x-posts", "judgments"]));
-
-  // --- raw files ---
-  for (const [name, minRows] of Object.entries(RAW_MIN_ROWS)) {
+  for (const name of names) {
+    const minRows = RAW_MIN_ROWS[name] ?? 0;
     const p = join(dayDir, "raw", `${name}.csv`);
     if (!existsSync(p)) {
       errors.push(`raw/${name}.csv missing`);
@@ -175,6 +167,46 @@ export function validate(dataDir: string, date: string, opts: ValidateOptions = 
       }
     }
   }
+}
+
+/** Raw files written before the buzz and judge stages, which are the metered ones. */
+export const PRE_METERED_RAW = ["skills-sh", "skills-sh-official", "clawhub", "clawhub-official", "skillhub", "skillhub-enterprise", "github-repos"] as const;
+
+/**
+ * The raw-file part of the gate, run as soon as the free collectors finish. A day that
+ * will fail the final gate anyway (a missing file, a drift) then stops before spending
+ * X requests and jev judgements — and so does the fallback run that retries it.
+ */
+export function precheckRaw(dataDir: string, date: string, opts: ValidateOptions = {}): ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  checkRawFiles(dataDir, date, PRE_METERED_RAW, opts, errors, warnings);
+  return { errors, warnings };
+}
+
+export function validate(dataDir: string, date: string, opts: ValidateOptions = {}): ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const dayDir = join(dataDir, date);
+
+  // --- directory closure: no unexpected files may ship (audit M1 — a withdrawn
+  // ranking survived every per-file check because nothing enumerated the directory) ---
+  const expectDir = (subdir: string, expected: Set<string>): void => {
+    const dir = join(dayDir, subdir);
+    if (!existsSync(dir)) return; // missing files are reported per-file below
+    for (const f of readdirSync(dir)) {
+      if (f.endsWith(".csv") && !expected.has(f.replace(/\.csv$/, ""))) {
+        errors.push(`${subdir}/${f} is not a known output — stale file from an older pipeline?`);
+      }
+    }
+  };
+  expectDir("rankings", new Set(Object.keys(RANKING_MIN_ROWS)));
+  // judgments is optional: without an LLM key the judge step still writes carried-forward rows,
+  // but a --rank-only run over old data has none.
+  expectDir("raw", new Set([...Object.keys(RAW_MIN_ROWS), "x-posts", "judgments"]));
+
+  // --- raw files ---
+  checkRawFiles(dataDir, date, Object.keys(RAW_MIN_ROWS), opts, errors, warnings);
 
   // anchor: the all-time #1 must be a mega-hit (catches parser picking up a wrong array)
   const ssPath = join(dayDir, "raw", "skills-sh.csv");

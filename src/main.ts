@@ -10,7 +10,7 @@ import { judgeEntities } from "./judge/entities.js";
 import { computeRankings } from "./rank/rankings.js";
 import { writeRaw, writeRankings, refreshLatest, commitAndPush, dataRepoPath } from "./publish/publish.js";
 import { renderReadme } from "./publish/readme.js";
-import { validate, reportAndExit } from "./validate.js";
+import { validate, precheckRaw, reportAndExit } from "./validate.js";
 import { log } from "./lib/log.js";
 import type { RawTable } from "./sources/types.js";
 
@@ -36,7 +36,11 @@ if (dateArg && !/^\d{4}-\d{2}-\d{2}$/.test(dateArg)) {
 }
 const date = dateArg ?? new Date().toISOString().slice(0, 10); // UTC
 
-async function collectAll(rawDir: string, jev: JevClient | null): Promise<{ tables: RawTable[]; failures: string[] }> {
+async function collectAll(
+  rawDir: string,
+  jev: JevClient | null,
+  beforeMetered?: (tables: RawTable[], failures: string[]) => void,
+): Promise<{ tables: RawTable[]; failures: string[] }> {
   const tables: RawTable[] = [];
   const failures: string[] = [];
 
@@ -67,6 +71,9 @@ async function collectAll(rawDir: string, jev: JevClient | null): Promise<{ tabl
     }
   }
 
+  // Everything after this point spends metered quota (X requests, jev judgements).
+  beforeMetered?.(tables, failures);
+
   // Social buzz across X / HN / Bluesky / GitHub for the top skills
   if (want("buzz")) {
     try {
@@ -93,7 +100,20 @@ async function main(): Promise<void> {
   if (!rankOnly) {
     const jev = jevClient();
     if (!jev) log.warn("main", "LLM_API_BASE / LLM_API_KEY not set — jev judgements unavailable");
-    const collected = await collectAll(join(dataDir, date, "raw"), jev);
+    // A day that will fail the final gate on its raw files (a missing source, a drift)
+    // stops here instead of after the metered stages. Full runs only: --only writes a
+    // subset of the files by design.
+    const precheck = (tables: RawTable[], collectFailures: string[]): void => {
+      writeRaw(date, tables);
+      const pre = precheckRaw(dataDir, date, { allowDrift });
+      if (pre.errors.length === 0) return; // warnings are reported once, by the final gate
+      if (collectFailures.length > 0) {
+        pre.warnings.push(`${collectFailures.length} source(s) failed during collect: ${collectFailures.join(" | ")}`);
+      }
+      log.error("validate", "raw data already fails the gate — skipping buzz and judge (metered)");
+      reportAndExit(pre); // exits 1
+    };
+    const collected = await collectAll(join(dataDir, date, "raw"), jev, only === null ? precheck : undefined);
     failures = collected.failures;
     if (collected.tables.length === 0) {
       log.error("main", "all collectors failed — nothing to write, keeping yesterday's data");
