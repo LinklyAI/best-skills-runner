@@ -5,6 +5,8 @@ import { log } from "../lib/log.js";
 import type { RawTable } from "../sources/types.js";
 import { isExcluded } from "../judge/quality.js";
 import { buildEntities, type Entity } from "./entity.js";
+import { foldBundles, type FoldKey } from "./fold.js";
+import { previousRanks, rankChange } from "./rank-change.js";
 import { percentiler, weightedMean, recency, round3, NEUTRAL } from "./score.js";
 
 const TOP = 100;
@@ -248,6 +250,14 @@ const IDENT_COLS = [
  */
 const TAIL_COLS = ["category", "flags"];
 
+/**
+ * Appended after every list's own columns (same backward-compatibility rule):
+ * `group_size` and `group_members` on folded lists, `rank_change_7d` on lists that
+ * show movement. See ./fold.ts and ./rank-change.ts.
+ */
+const FOLD_COLS = ["group_size", "group_members"];
+const CHANGE_COLS = ["rank_change_7d"];
+
 /** Maintain the cumulative first-seen index (data/index/first-seen.csv). */
 function updateFirstSeen(dataDir: string, date: string, entities: Entity[]): { firstSeen: Map<string, string>; earliest: string } {
   const p = join(dataDir, "index", "first-seen.csv");
@@ -285,10 +295,52 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
   log.info("rank", `${scored.length} merged entities (${excluded.length} excluded by judgement)`);
   const ranked = (rows: Row[]): Row[] => rows.slice(0, TOP).map((r, i) => ({ rank: i + 1, ...r }));
 
+  const byKey = new Map(scored.map((s) => [s.key, s]));
+  const foldKey = (r: Row): FoldKey => {
+    const s = byKey.get(String(r["skill_key"] ?? ""));
+    const w = s?.ssWeekly;
+    return { repo: s?.ssSource, weekly: w?.[w.length - 1] };
+  };
+  /** A skill row is the lead's key plus every folded member's key. */
+  const skillIds = (r: Record<string, unknown>): string[] => {
+    const ids = [String(r["skill_key"] ?? "")];
+    const source = String(r["source_skillssh"] ?? "");
+    const members = String(r["group_members"] ?? "");
+    if (source && members) for (const m of members.split("|")) ids.push(`ss:${source}/${m}`.toLowerCase());
+    return ids;
+  };
+
+  interface ListOptions {
+    /** Fold same-repo skills whose weekly installs move together into one row. */
+    fold?: boolean;
+    /** Add `rank_change_7d`; `ids` names a row the same way across days. */
+    change?: { ids: (r: Record<string, unknown>) => string[] };
+  }
+
   const tables: RawTable[] = [];
-  const add = (name: string, columns: string[], rows: Row[]): void => {
-    tables.push({ name, columns: ["rank", ...columns], rows: ranked(rows) });
-    log.info("rank", `${name}: ${Math.min(rows.length, TOP)} rows`);
+  const add = (name: string, columns: string[], rows: Row[], opts: ListOptions = {}): void => {
+    let list = rows;
+    const cols = [...columns];
+    if (opts.fold) {
+      list = foldBundles(rows, foldKey).map(({ lead, members }) => ({
+        ...lead,
+        group_size: members.length + 1,
+        group_members: members.map((m) => m["skill"]).join("|") || undefined,
+      }));
+      cols.push(...FOLD_COLS);
+    }
+    let out = ranked(list);
+    if (opts.change) {
+      const ids = opts.change.ids;
+      // A folded list is only comparable with a folded list: before folding, a bundle
+      // spread over many ranks and every row would read as a big move.
+      const prev = previousRanks(dataDir, date, name, ids, opts.fold ? "group_size" : undefined);
+      out = out.map((r) => ({ ...r, rank_change_7d: rankChange(Number(r["rank"]), ids(r), prev) }));
+      cols.push(...CHANGE_COLS);
+    }
+    tables.push({ name, columns: ["rank", ...cols], rows: out });
+    const folded = opts.fold ? ` (${list.length < rows.length ? `${rows.length - list.length} folded` : "none folded"})` : "";
+    log.info("rank", `${name}: ${out.length} rows${folded}`);
   };
 
   // Effective age: registry created_at or our own first-seen index (only meaningful
@@ -316,6 +368,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
         pop_score: round3(s.popScore),
         coverage: s.coverage,
       })),
+    { fold: true, change: { ids: skillIds } },
   );
 
   // 2. trending-7d — source honestly labeled; own-snapshot growth replaces this after 7 days of history
@@ -347,6 +400,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
           data_source: "skills.sh-trending",
         };
       }),
+    { fold: true },
   );
 
   // 3. social-buzz — at least 2 platforms with signal and 3 total mentions.
@@ -413,6 +467,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
         downloads_skillhub_cn: s.shDownloads,
         pop_score: round3(s.popScore),
       })),
+    { fold: true, change: { ids: skillIds } },
   );
 
   // 6. official-vendors — three platform sections, ranked within platform, never across
@@ -528,6 +583,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
           topics: r["topics"],
         };
       }),
+    { change: { ids: (r) => [String(r["repo"] ?? "").toLowerCase()] } },
   );
 
   // 8. rising-stars — registry created_at or our own first-seen index
@@ -546,6 +602,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
         downloads_skillhub_cn: s.shDownloads,
         pop_score: round3(s.popScore),
       })),
+    { fold: true },
   );
 
   // 9. best-100 — WIS composite (neutral-prior filled); newcomers stay in rising-stars.
@@ -576,6 +633,7 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
         coverage: s.coverage,
         anomaly: s.anomaly,
       })),
+    { fold: true, change: { ids: skillIds } },
   );
 
   return tables;
