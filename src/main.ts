@@ -8,6 +8,8 @@ import { collectBuzz } from "./buzz/collect-buzz.js";
 import { jevClient, type JevClient } from "./judge/jev.js";
 import { judgeEntities } from "./judge/entities.js";
 import { computeRankings } from "./rank/rankings.js";
+import { buildSkillDetails } from "./detail/details.js";
+import { describeClient } from "./detail/describe.js";
 import { writeRaw, writeRankings, refreshLatest, commitAndPush, dataRepoPath } from "./publish/publish.js";
 import { renderReadme } from "./publish/readme.js";
 import { validate, precheckRaw, reportAndExit } from "./validate.js";
@@ -17,6 +19,8 @@ import type { RawTable } from "./sources/types.js";
 const noPush = process.argv.includes("--no-push");
 /** Recompute rankings + README from already-collected raw data (no network). */
 const rankOnly = process.argv.includes("--rank-only");
+/** --detail-online with --rank-only: still read SKILL.md and call the model for detail pages. */
+const detailOnline = process.argv.includes("--detail-online");
 /** --only=skills-sh,clawhub,skillhub,github,buzz,judge — run a subset of steps for debugging. */
 const onlyArg = process.argv.find((a) => a.startsWith("--only="));
 const only = onlyArg ? new Set(onlyArg.slice("--only=".length).split(",")) : null;
@@ -140,6 +144,16 @@ async function main(): Promise<void> {
   const result = validate(dataDir, date, { allowDrift });
   if (failures.length > 0) {
     result.warnings.push(`${failures.length} source(s) failed during collect: ${failures.join(" | ")}`);
+  }
+  // Detail pages are an addition to the lists: they never block publishing them.
+  if (result.errors.length === 0) {
+    const offline = rankOnly && !detailOnline;
+    try {
+      await buildSkillDetails(dataDir, date, rankings, offline ? null : describeClient(), { offline });
+    } catch (err) {
+      result.warnings.push(`detail pages: ${String(err)}`);
+      log.error("detail", String(err));
+    }
   }
   if (result.errors.length > 0 || noPush) {
     reportAndExit(result); // exits 1 on errors
