@@ -65,7 +65,10 @@ function renderTable(table: RawTable, date: string, locale: Locale): string {
     const text = k === "x_mentions_7d" && truncated && v !== "—" ? `${v}+` : v;
     if (text === "—") return text;
     const url = linkFor(k, r);
-    return url ? link(text, url) : text;
+    const linked = url ? link(text, url) : text;
+    // A folded row stands for its whole same-repo bundle; "+N" says how many more it carries.
+    const more = k === "skill" ? Number(r["group_size"] ?? 1) - 1 : 0;
+    return more > 0 ? `${linked} +${more}` : linked;
   };
   const body = rows.map((r) => `| ${cols.map((c) => cell(r, c)).join(" | ")} |`).join("\n");
   const csvLink = `${locale.rootPrefix}data/${date}/rankings/${table.name}.csv`;
