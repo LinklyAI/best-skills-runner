@@ -66,7 +66,7 @@ pnpm rank       # recompute rankings from today's already-collected raw data
 pnpm daily      # full run, validate, and push
 ```
 
-`main.ts` also takes `--date=YYYY-MM-DD`, `--only=<collectors>`, `--rank-only`, `--no-push` and `--allow-drift=<raw files>` (accept a confirmed upstream row-count change for one run, e.g. `--allow-drift=clawhub-official`). Dates are always UTC.
+`main.ts` also takes `--date=YYYY-MM-DD`, `--only=<collectors>`, `--rank-only`, `--no-push` and `--allow-drift=<raw files>` (accept a confirmed upstream row-count change for one run, e.g. `--allow-drift=clawhub-official`). A count that returns to within 5% of a size published in the last 14 days is accepted without the flag, as a warning. Dates are always UTC.
 
 Only `GITHUB_TOKEN` is effectively required (repository stars and GitHub mention counts). Without `RAPIDAPI_KEY` the pipeline skips X; without `LLM_API_BASE`/`LLM_API_KEY` it skips every jev judgement (see below) and falls back to raw mention counts and the latest earlier skill judgements. Neither is fatal — degraded columns are labeled as such in the output.
 

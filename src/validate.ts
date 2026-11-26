@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { readCsv } from "./lib/csv.js";
 import { log } from "./lib/log.js";
 import { flagsOf, isExcluded, scoresOf } from "./judge/quality.js";
+import { X_TOP_N } from "./buzz/collect-buzz.js";
 
 /** Minimum row counts per raw file. Tripping these means a source silently degraded. */
 const RAW_MIN_ROWS: Record<string, number> = {
@@ -52,6 +53,41 @@ const MAX_EXCLUDED_SHARE = 0.05;
 /** Allowed day-over-day row count drift for raw files whose size is not fixed by construction. */
 const DRIFT_CHECKED = new Set(["github-repos", "clawhub-official", "buzz"]);
 const MAX_ROW_DRIFT = 0.3;
+/**
+ * Drift above this but within MAX_ROW_DRIFT still ships, with a warning. A shrink
+ * just under the hard limit otherwise passes in silence, and the day the source
+ * recovers is the first anyone hears of it.
+ */
+const WARN_ROW_DRIFT = 0.15;
+/**
+ * A rise past MAX_ROW_DRIFT is accepted (as a warning) when the new count is back
+ * within this tolerance of a size published in the last RESTORE_LOOKBACK_DAYS:
+ * the source returned to a level that already passed the gate. Only rises — a
+ * drop to an earlier low is just as likely a fresh collection failure.
+ */
+const RESTORE_LOOKBACK_DAYS = 14;
+const RESTORE_TOLERANCE = 0.05;
+
+/** X coverage: below these the X columns ship, but the run reports degraded X data. */
+const X_MIN_MEASURED_SHARE = 0.5;
+const X_VOLUME_LOOKBACK_DAYS = 7;
+const X_MIN_VOLUME_SHARE = 0.5;
+
+function daysBefore(date: string, n: number): string {
+  return new Date(new Date(`${date}T00:00:00Z`).getTime() - n * 86_400_000).toISOString().slice(0, 10);
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
+}
+
+/** X targets carry x_pages only when their search succeeded; failed ones stay blank. */
+function xStats(rows: Record<string, string>[]): { measured: number; volume: number } {
+  const measured = rows.filter((r) => (r["x_pages"] ?? "") !== "");
+  return { measured: measured.length, volume: measured.reduce((n, r) => n + (Number(r["x_raw_7d"]) || 0), 0) };
+}
 
 export interface ValidationResult {
   errors: string[];
@@ -113,16 +149,27 @@ export function validate(dataDir: string, date: string, opts: ValidateOptions = 
     }
 
     if (DRIFT_CHECKED.has(name)) {
-      const prevDate = new Date(new Date(`${date}T00:00:00Z`).getTime() - 86_400_000).toISOString().slice(0, 10);
+      const prevDate = daysBefore(date, 1);
       const prevPath = join(dataDir, prevDate, "raw", `${name}.csv`);
       if (existsSync(prevPath)) {
         const prevRows = readCsv(prevPath).length;
         if (prevRows > 0) {
           const drift = Math.abs(rows.length - prevRows) / prevRows;
+          const msg = `raw/${name}.csv row count drifted ${(drift * 100).toFixed(1)}% vs ${prevDate} (${prevRows} → ${rows.length})`;
           if (drift > MAX_ROW_DRIFT) {
-            const msg = `raw/${name}.csv row count drifted ${(drift * 100).toFixed(0)}% vs ${prevDate} (${prevRows} → ${rows.length})`;
+            let restoredFrom: string | undefined;
+            for (let n = 2; n <= RESTORE_LOOKBACK_DAYS && !restoredFrom && rows.length > prevRows; n++) {
+              const d = daysBefore(date, n);
+              const p = join(dataDir, d, "raw", `${name}.csv`);
+              if (!existsSync(p)) continue;
+              const earlier = readCsv(p).length;
+              if (earlier > 0 && Math.abs(rows.length - earlier) / earlier <= RESTORE_TOLERANCE) restoredFrom = `${d} (${earlier})`;
+            }
             if (opts.allowDrift?.has(name)) warnings.push(`${msg} — accepted via --allow-drift`);
+            else if (restoredFrom) warnings.push(`${msg} — accepted: back to the size published on ${restoredFrom}`);
             else errors.push(msg);
+          } else if (drift > WARN_ROW_DRIFT) {
+            warnings.push(`${msg} — under the ${MAX_ROW_DRIFT * 100}% limit, check the source`);
           }
         }
       }
@@ -146,6 +193,31 @@ export function validate(dataDir: string, date: string, opts: ValidateOptions = 
     );
     if (rows.length > 0 && measured.length / rows.length < 0.5) {
       errors.push(`buzz.csv: only ${measured.length}/${rows.length} rows have any platform measurement — collection likely failed`);
+    }
+
+    // One platform failing outright still passes the check above, so X gets its own.
+    const x = xStats(rows);
+    if (x.measured < X_TOP_N * X_MIN_MEASURED_SHARE) {
+      warnings.push(`buzz.csv: X measured for only ${x.measured}/${X_TOP_N} targets — X columns degraded`);
+    } else if (x.volume === 0) {
+      // Checked on its own: days like this would otherwise drag the baseline down to 0.
+      warnings.push(`buzz.csv: X found 0 in-window posts across ${x.measured} targets — provider degraded?`);
+    } else {
+      const history: number[] = [];
+      for (let n = 1; n <= X_VOLUME_LOOKBACK_DAYS; n++) {
+        const p = join(dataDir, daysBefore(date, n), "raw", "buzz.csv");
+        if (!existsSync(p)) continue;
+        const h = xStats(readCsv(p));
+        if (h.measured >= X_TOP_N * X_MIN_MEASURED_SHARE && h.volume > 0) history.push(h.volume);
+      }
+      if (history.length > 0) {
+        const base = median(history);
+        if (base > 0 && x.volume < base * X_MIN_VOLUME_SHARE) {
+          warnings.push(
+            `buzz.csv: X found ${x.volume} in-window posts, ${Math.round((x.volume / base) * 100)}% of the ${history.length}-day median (${base}) — provider degraded?`,
+          );
+        }
+      }
     }
   }
 
