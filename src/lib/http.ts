@@ -11,6 +11,8 @@ export interface FetchOptions {
   retryDelayMs?: number;
   /** Treat Retry-After as a minimum and add jitter to exponential backoff. */
   retryBackoffWithJitter?: boolean;
+  /** Called before every request actually sent, retries included (for metered APIs). */
+  onRequest?: () => void;
 }
 
 /**
@@ -55,41 +57,59 @@ function retryDelay(
   return floorMs + jitterMs;
 }
 
-async function fetchWithRetry(url: string, opts: FetchOptions = {}): Promise<Response> {
+/**
+ * Fetches a URL and reads its whole body, retrying transient failures.
+ *
+ * The body read is part of the retried unit: a connection dropped mid-body
+ * surfaces from `res.text()` (undici reports it as `TypeError: terminated`),
+ * after the status line already arrived, so retrying only the `fetch()` call
+ * would let it through. Parsing happens in the callers, outside the retries,
+ * because a malformed payload is deterministic.
+ */
+async function fetchBodyWithRetry(url: string, opts: FetchOptions = {}): Promise<string> {
   const {
     headers = {},
     timeoutMs = 60_000,
     retries = 2,
     retryDelayMs = 2_000,
     retryBackoffWithJitter = false,
+    onRequest,
   } = opts;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    let res: Response;
     try {
-      const res = await fetch(url, {
+      onRequest?.();
+      res = await fetch(url, {
         headers: { "User-Agent": UA, ...headers },
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (isRetryable(res.status)) {
-        const diag = await describeHttpError(res);
-        lastErr = new Error(`${diag} for ${url}`);
-        if (attempt >= retries) break;
-        const delay = retryDelay(
-          attempt,
-          retryDelayMs,
-          res.headers.get("retry-after"),
-          retryBackoffWithJitter,
-        );
-        log.info("http", `${diag} on ${url}, retrying in ${delay}ms`);
-        await sleep(delay);
-        continue;
-      }
-      return res;
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
         const delay = retryDelay(attempt, retryDelayMs, null, retryBackoffWithJitter);
         log.info("http", `${String(err)} on ${url}, retrying in ${delay}ms`);
+        await sleep(delay);
+      }
+      continue;
+    }
+    if (isRetryable(res.status)) {
+      const diag = await describeHttpError(res);
+      lastErr = new Error(`${diag} for ${url}`);
+      if (attempt >= retries) break;
+      const delay = retryDelay(attempt, retryDelayMs, res.headers.get("retry-after"), retryBackoffWithJitter);
+      log.info("http", `${diag} on ${url}, retrying in ${delay}ms`);
+      await sleep(delay);
+      continue;
+    }
+    if (!res.ok) throw new Error(`${await describeHttpError(res)} for ${url}`);
+    try {
+      return await res.text();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        const delay = retryDelay(attempt, retryDelayMs, null, retryBackoffWithJitter);
+        log.info("http", `body read failed (${String(err)}) on ${url}, retrying in ${delay}ms`);
         await sleep(delay);
       }
     }
@@ -98,15 +118,16 @@ async function fetchWithRetry(url: string, opts: FetchOptions = {}): Promise<Res
 }
 
 export async function fetchText(url: string, opts?: FetchOptions): Promise<string> {
-  const res = await fetchWithRetry(url, opts);
-  if (!res.ok) throw new Error(`${await describeHttpError(res)} for ${url}`);
-  return res.text();
+  return fetchBodyWithRetry(url, opts);
 }
 
 export async function fetchJson<T = unknown>(url: string, opts?: FetchOptions): Promise<T> {
-  const res = await fetchWithRetry(url, opts);
-  if (!res.ok) throw new Error(`${await describeHttpError(res)} for ${url}`);
-  return (await res.json()) as T;
+  const body = await fetchBodyWithRetry(url, opts);
+  try {
+    return JSON.parse(body) as T;
+  } catch (err) {
+    throw new Error(`invalid JSON from ${url}: ${String(err)} | body: ${body.slice(0, 300).replace(/\s+/g, " ")}`);
+  }
 }
 
 export function sleep(ms: number): Promise<void> {
