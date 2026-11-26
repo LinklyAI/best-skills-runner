@@ -79,7 +79,10 @@ function readIf(dir: string, file: string): Array<Record<string, string>> {
 export function buildEntities(rawDir: string): Map<string, Entity> {
   const entities = new Map<string, Entity>();
 
-  // skills.sh — key by source+name; same key appears in all three views (max installs wins)
+  // skills.sh — key by source+name; the same key can appear in all three views.
+  // Only the all-time view carries cumulative installs: trending and hot report the
+  // installs of their own short window, so a skill listed only there has no
+  // cumulative count (left undefined, never filled from the window count).
   for (const r of readIf(rawDir, "skills-sh")) {
     const name = (r["name"] ?? "").trim();
     const source = (r["source"] ?? "").trim();
@@ -91,7 +94,7 @@ export function buildEntities(rawDir: string): Map<string, Entity> {
       entities.set(key, e);
     }
     const installs = num(r["installs"]);
-    if (installs !== undefined && (e.ssInstalls === undefined || installs > e.ssInstalls)) {
+    if (r["view"] === "all-time" && installs !== undefined) {
       e.ssInstalls = installs;
       if (r["weekly_installs"]) e.ssWeekly = r["weekly_installs"].split("|").map(Number);
     }
