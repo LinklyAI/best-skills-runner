@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldBundles } from "../src/rank/fold.js";
+import { foldBundles, nameBundle } from "../src/rank/fold.js";
 
 interface Item { name: string; repo?: string; weekly?: number }
 const fold = (items: Item[]) =>
@@ -50,4 +50,16 @@ test("rows without a repo or a weekly count never fold", () => {
     ]),
     [["c1"], ["c2"], ["a1"], ["a2"]],
   );
+});
+
+test("a folded row shows the member with the most cumulative installs", () => {
+  const installs: Record<string, number> = { a1: 100, a2: 300, a3: 200 };
+  const b = nameBundle({ lead: "a1", members: ["a2", "a3"] }, (n) => installs[n]);
+  assert.deepEqual([b.lead, ...b.members], ["a2", "a3", "a1"]);
+});
+
+test("ties and unknown installs keep list order, unknown last", () => {
+  const installs: Record<string, number | undefined> = { a1: 100, a2: 100, a3: undefined };
+  const b = nameBundle({ lead: "a3", members: ["a1", "a2"] }, (n) => installs[n]);
+  assert.deepEqual([b.lead, ...b.members], ["a1", "a2", "a3"]);
 });

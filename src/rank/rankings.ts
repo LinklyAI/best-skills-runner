@@ -5,7 +5,7 @@ import { log } from "../lib/log.js";
 import type { RawTable } from "../sources/types.js";
 import { isExcluded } from "../judge/quality.js";
 import { buildEntities, type Entity } from "./entity.js";
-import { foldBundles, type FoldKey } from "./fold.js";
+import { foldBundles, nameBundle, type FoldKey } from "./fold.js";
 import { previousRanks, rankChange } from "./rank-change.js";
 import { percentiler, weightedMean, recency, round3, NEUTRAL } from "./score.js";
 
@@ -322,7 +322,13 @@ export function computeRankings(dataDir: string, date: string): RawTable[] {
     let list = rows;
     const cols = [...columns];
     if (opts.fold) {
-      list = foldBundles(rows, foldKey).map(({ lead, members }) => ({
+      const installsOf = (r: Row): number | undefined => byKey.get(String(r["skill_key"] ?? ""))?.ssInstalls;
+      // The shown skill's own row decides the position, so the list stays in score order.
+      const pos = new Map(rows.map((r, i) => [r, i]));
+      list = foldBundles(rows, foldKey)
+        .map((b) => nameBundle(b, installsOf))
+        .sort((a, b) => (pos.get(a.lead) ?? 0) - (pos.get(b.lead) ?? 0))
+        .map(({ lead, members }) => ({
         ...lead,
         group_size: members.length + 1,
         group_members: members.map((m) => m["skill"]).join("|") || undefined,

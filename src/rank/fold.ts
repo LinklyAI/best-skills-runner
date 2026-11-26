@@ -4,8 +4,8 @@
  * skills.sh counts installs per repository: installing a repo records one install for
  * every skill in it, so the skills of one repo move almost in lockstep (week-over-week
  * correlation 0.98 within a repo, 0.00 across repos, measured 2026-11-26) and a single
- * repo could fill a third of a Top 100. A list folds those skills into one row: the
- * best-ranked one stands for the bundle, and the rest ride along as `group_members`.
+ * repo could fill a third of a Top 100. A list folds those skills into one row;
+ * `nameBundle` picks which skill the row shows, and the row takes that skill's position.
  *
  * Only skills whose last-week installs are within FOLD_TOLERANCE of the bundle's lead
  * fold: a skill people install on its own (its weekly count clearly apart) keeps its
@@ -54,4 +54,19 @@ export function foldBundles<T>(items: readonly T[], keyOf: (item: T) => FoldKey,
     }
   }
   return bundles.map(({ lead, members }) => ({ lead, members }));
+}
+
+/**
+ * Picks the skill a folded row shows: the one with the most cumulative installs, so the
+ * row keeps the same name from day to day (the best-ranked member changes often, since
+ * the counts inside a bundle are within the fold tolerance of each other). Members are
+ * listed by cumulative installs, most first; ties keep list order. Unknown installs
+ * sort last.
+ */
+export function nameBundle<T>(bundle: Bundle<T>, installsOf: (item: T) => number | undefined): Bundle<T> {
+  const all = [bundle.lead, ...bundle.members];
+  const n = (item: T): number => installsOf(item) ?? -1;
+  const sorted = all.map((item, i) => ({ item, i })).sort((a, b) => n(b.item) - n(a.item) || a.i - b.i);
+  const [lead, ...members] = sorted.map((x) => x.item);
+  return { lead: lead as T, members };
 }
