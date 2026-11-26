@@ -4,9 +4,11 @@
 # and SkillHub is a China-hosted API.
 name: probe
 
+# 00:13 UTC: before the daily run (dispatched at 00:30), so a source that cannot be
+# reached shows up here first instead of only in the daily failure.
 on:
   schedule:
-    - cron: "23 1 * * *"
+    - cron: "13 0 * * *"
   workflow_dispatch:
 
 jobs:
@@ -16,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v5
         with:
           node-version: 24
