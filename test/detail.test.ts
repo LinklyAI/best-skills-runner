@@ -110,3 +110,22 @@ test("ranking rows from before skill_key existed still map to entity keys", () =
   assert.equal(rowKey({ skill: "gog", platform: "clawhub", slug_clawhub: "gog" }), "ch:gog");
   assert.equal(rowKey({ skill_key: "sh:x", skill: "y" }), "sh:x");
 });
+
+test("index carries the AI tagline and summary for hover cards", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { writeIndex } = await import("../src/detail/details.js");
+  const dir = mkdtempSync(join(tmpdir(), "idx-"));
+  try {
+    mkdirSync(join(dir, "o/r"), { recursive: true });
+    const text = (s: string) => ({ tagline: `t-${s}`, summary: `s-${s}`, problem: [], fit: [], unfit: [], steps: [] });
+    writeFileSync(join(dir, "o/r/a.json"), JSON.stringify({ name: "a", platform: "skills.sh", date: "2026-11-27", stats: { rank: 3 }, about: { en: text("en"), zh: text("zh") } }));
+    writeFileSync(join(dir, "o/r/b.json"), JSON.stringify({ name: "b", platform: "skills.sh", date: "2026-11-27", stats: {} }));
+    const [a, b] = writeIndex(dir);
+    assert.deepEqual(a, { path: "o/r/a", name: "a", platform: "skills.sh", date: "2026-11-27", rank: 3, tagline: { en: "t-en", zh: "t-zh" }, summary: { en: "s-en", zh: "s-zh" } });
+    assert.deepEqual(b, { path: "o/r/b", name: "b", platform: "skills.sh", date: "2026-11-27" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

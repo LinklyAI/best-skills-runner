@@ -314,9 +314,12 @@ export interface IndexEntry {
   /** Last data date of the file; older than the latest run means the skill left the lists. */
   date: string;
   rank?: number;
+  /** Short intro for hover cards in the ranking tables, from the AI text (skills.sh rows carry no description). */
+  tagline?: { en: string; zh: string };
+  summary?: { en: string; zh: string };
 }
 
-/** Lists every page file, the sitemap's source. */
+/** Lists every page file: the sitemap's source and the ranking tables' hover intros. */
 export function writeIndex(outDir: string): IndexEntry[] {
   const entries: IndexEntry[] = [];
   const walk = (dir: string): void => {
@@ -327,7 +330,17 @@ export function writeIndex(outDir: string): IndexEntry[] {
       else if (f.name.endsWith(".json") && p !== join(outDir, "index.json")) {
         const d = readJson<SkillDetail>(p);
         if (!d) continue;
-        entries.push({ path: relative(outDir, p).slice(0, -5), name: d.name, platform: d.platform, date: d.date, ...(d.stats.rank !== undefined && { rank: d.stats.rank }) });
+        entries.push({
+          path: relative(outDir, p).slice(0, -5),
+          name: d.name,
+          platform: d.platform,
+          date: d.date,
+          ...(d.stats.rank !== undefined && { rank: d.stats.rank }),
+          ...(d.about && {
+            tagline: { en: d.about.en.tagline, zh: d.about.zh.tagline },
+            summary: { en: d.about.en.summary, zh: d.about.zh.summary },
+          }),
+        });
       }
     }
   };
