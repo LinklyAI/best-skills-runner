@@ -7,6 +7,17 @@ import type { RawTable } from "../sources/types.js";
 const START = "<!-- RANKINGS:START -->";
 const END = "<!-- RANKINGS:END -->";
 
+/**
+ * The "data updated" badge is a static shields badge whose date the daily run rewrites.
+ * A dynamic badge that makes shields fetch the README answers in 1–4 s, and GitHub's
+ * image proxy gives up on slow images, so the README showed a broken image.
+ */
+const DATE_BADGE = /(img\.shields\.io\/badge\/data%20updated-)\d{4}--\d{2}--\d{2}(-brightgreen)/g;
+
+export function refreshDateBadge(readme: string, date: string): string {
+  return readme.replace(DATE_BADGE, `$1${date.replace(/-/g, "--")}$2`);
+}
+
 /** Registry home pages — also the base for the vendor and platform links. */
 const PLATFORM_HOME: Record<string, string> = {
   "skills.sh": "https://www.skills.sh",
@@ -133,7 +144,8 @@ export function renderReadme(repoPath: string, date: string, tables: RawTable[])
       continue;
     }
     const block = renderBlock(date, tables, locale);
-    writeFileSync(readmePath, readme.slice(0, startIdx) + block + readme.slice(endIdx + END.length), "utf8");
+    const next = readme.slice(0, startIdx) + block + readme.slice(endIdx + END.length);
+    writeFileSync(readmePath, refreshDateBadge(next, date), "utf8");
     log.info("readme", `rendered ${locale.file}`);
   }
 }
